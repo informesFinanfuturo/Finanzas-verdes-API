@@ -28,6 +28,7 @@ async function getUsers(req, res) {
       FROM usuario u
       LEFT JOIN rol r ON r.id_rol = u.id_rol
       LEFT JOIN asesor a ON a.id_usuario = u.id_usuario
+      WHERE u.estado != 'inactivo'
       ORDER BY u.created_at DESC
       `
     );
@@ -116,6 +117,7 @@ async function createUser(req, res) {
     nit,
     direccion,
     calificacion,
+    tipos_proveedor
   } = req.body;
 
   const client = await pool.connect();
@@ -209,36 +211,56 @@ async function createUser(req, res) {
 
     // ✅ 7️⃣ Crear proveedor
     if (rol === 'Proveedor') {
-      if (!razon_social || !nit || !direccion) {
-        throw new Error('razon_social, nit y direccion son obligatorios para proveedor');
-      }
+  if (!razon_social || !nit || !direccion) {
+    throw new Error('razon_social, nit y direccion son obligatorios para proveedor');
+  }
 
+  const proveedorResult = await client.query(
+    `
+    INSERT INTO proveedor (
+      razon_social,
+      nit,
+      direccion,
+      calificacion,
+      id_usuario,
+      estado,
+      created_at,
+      updated_at,
+      created_by,
+      updated_by
+    )
+    VALUES ($1,$2,$3,$4,$5,'activo',NOW(),NULL,$6,NULL)
+    RETURNING id_proveedor
+    `,
+    [
+      razon_social,
+      nit,
+      direccion,
+      calificacion ?? 0,
+      idUsuario,
+      created_by
+    ]
+  );
+
+  const idProveedor = proveedorResult.rows[0].id_proveedor;
+
+  // 🔥 NUEVO: insertar tipos (si vienen)
+  if (Array.isArray(tipos_proveedor) && tipos_proveedor.length > 0) {
+
+    for (const idTipo of tipos_proveedor) {
       await client.query(
         `
-        INSERT INTO proveedor (
-          razon_social,
-          nit,
-          direccion,
-          calificacion,
-          id_usuario,
-          estado,
-          created_at,
-          updated_at,
-          created_by,
-          updated_by
+        INSERT INTO proveedor_tipo (
+          id_proveedor,
+          id_tipo_proveedor
         )
-        VALUES ($1,$2,$3,$4,$5,'activo',NOW(),NULL,$6,NULL)
+        VALUES ($1, $2)
         `,
-        [
-          razon_social,
-          nit,
-          direccion,
-          calificacion ?? 0,
-          idUsuario,
-          created_by
-        ]
+        [idProveedor, idTipo]
       );
     }
+  }
+}
 
     await client.query('COMMIT');
 
@@ -282,7 +304,7 @@ async function updateUser(req, res) {
     razon_social,
     nit,
     direccion,
-    calificacion,
+    tipos_proveedor = [],
   } = req.body;
 
   const client = await pool.connect();
@@ -418,67 +440,68 @@ async function updateUser(req, res) {
     }
 
     // ========================
-    // ✅ PROVEEDOR (UPSERT)
+    // ✅ TIPOS PROVEEDOR (SYNC 🔥)
     // ========================
     if (rol === 'Proveedor') {
-      const existe = await client.query(
-        'SELECT id_proveedor FROM proveedor WHERE id_usuario = $1',
+
+      // ✅ obtener id_proveedor
+      const proveedorResult = await client.query(
+        `SELECT id_proveedor FROM proveedor WHERE id_usuario = $1`,
         [idUsuario]
       );
 
-      if (existe.rows.length === 0) {
-        if (!razon_social || !nit || !direccion) {
-          throw new Error('Datos de proveedor incompletos');
-        }
+      const idProveedor = proveedorResult.rows[0]?.id_proveedor;
 
+      if (!idProveedor) {
+        throw new Error('Proveedor no encontrado para asignar tipos');
+      }
+
+      // ✅ obtener actuales
+      const currentTiposResult = await client.query(
+        `
+        SELECT id_tipo_proveedor
+        FROM proveedor_tipo
+        WHERE id_proveedor = $1
+        `,
+        [idProveedor]
+      );
+
+      const actuales = currentTiposResult.rows.map(r => r.id_tipo_proveedor);
+
+      // ✅ normalizar input
+      const nuevos = (tipos_proveedor || []).map(Number);
+
+      // ✅ calcular diferencias
+      const toDelete = actuales.filter(id => !nuevos.includes(id));
+      const toInsert = nuevos.filter(id => !actuales.includes(id));
+
+      // ✅ DELETE
+      if (toDelete.length > 0) {
         await client.query(
           `
-          INSERT INTO proveedor (
-            razon_social, nit, direccion, calificacion,
-            id_usuario, estado,
-            created_at, updated_at,
-            created_by, updated_by
-          )
-          VALUES ($1,$2,$3,$4,$5,'activo',NOW(),NULL,$6,NULL)
+          DELETE FROM proveedor_tipo
+          WHERE id_proveedor = $1
+            AND id_tipo_proveedor = ANY($2::int[])
           `,
-          [
-            razon_social,
-            nit,
-            direccion,
-            calificacion ?? null,
-            idUsuario,
-            updated_by
-          ]
+          [idProveedor, toDelete]
         );
-      } else {
-        const fieldsP = [];
-        const valuesP = [];
-        let j = 1;
+      }
 
-        const addP = (f, v) => {
-          fieldsP.push(`${f} = $${j}`);
-          valuesP.push(v);
-          j++;
-        };
-
-        if (razon_social) addP('razon_social', razon_social);
-        if (nit) addP('nit', nit);
-        if (direccion) addP('direccion', direccion);
-        if (calificacion !== undefined) addP('calificacion', calificacion);
-
-        fieldsP.push('updated_at = NOW()');
-        addP('updated_by', updated_by);
-
+      // ✅ INSERT
+      for (const idTipo of toInsert) {
         await client.query(
           `
-          UPDATE proveedor
-          SET ${fieldsP.join(', ')}
-          WHERE id_usuario = $${j}
+          INSERT INTO proveedor_tipo (
+            id_proveedor,
+            id_tipo_proveedor
+          )
+          VALUES ($1, $2)
           `,
-          [...valuesP, idUsuario]
+          [idProveedor, idTipo]
         );
       }
     }
+
 
     await client.query('COMMIT');
 
@@ -522,24 +545,37 @@ async function getUserFullDetail(req, res) {
         r.id_rol,
         r.nombre_rol,
 
-        -- ✅ DATOS ASESOR
         a.id_asesor,
         a.nombre_cargo,
         a.sede,
 
-        -- ✅ DATOS PROVEEDOR
         p.id_proveedor,
         p.razon_social,
         p.nit,
         p.direccion,
-        p.calificacion
+        p.calificacion,
+
+        COALESCE(
+          json_agg(DISTINCT tp.id_tipo_proveedor)
+          FILTER (WHERE tp.id_tipo_proveedor IS NOT NULL),
+          '[]'
+        ) AS tipos_proveedor
 
       FROM usuario u
       LEFT JOIN rol r ON r.id_rol = u.id_rol
       LEFT JOIN asesor a ON a.id_usuario = u.id_usuario
       LEFT JOIN proveedor p ON p.id_usuario = u.id_usuario
 
+      LEFT JOIN proveedor_tipo pt ON pt.id_proveedor = p.id_proveedor
+      LEFT JOIN tipo_proveedor tp ON tp.id_tipo_proveedor = pt.id_tipo_proveedor
+
       WHERE u.id_usuario = $1
+
+      GROUP BY
+        u.id_usuario,
+        r.id_rol,
+        a.id_asesor,
+  p.id_proveedor;
       `,
       [idUsuario]
     );
@@ -564,13 +600,16 @@ async function getUserFullDetail(req, res) {
     }
 
     if (row.nombre_rol === 'Proveedor') {
+      
       extraData = {
         id_proveedor: row.id_proveedor,
         razon_social: row.razon_social,
         nit: row.nit,
         direccion: row.direccion,
         calificacion: row.calificacion,
+        tipos_proveedor: row.tipos_proveedor
       };
+
     }
 
     return res.status(200).json({

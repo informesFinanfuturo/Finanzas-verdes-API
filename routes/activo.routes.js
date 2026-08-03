@@ -9,11 +9,14 @@ const {
   updateActivo,
   uploadImagenActivo,
   deleteImagenActivo,
+  analizarActivo,
+  deleteActivo,
 } = require('../controllers/activo.controller');
 
 // POST /api/activo
 router.post('/', requirePermissions(["Crear activo"]), createActivo);
 router.post('/upload', upload.single('image'), uploadImagenActivo);
+router.post('/analizar/:id', requirePermissions(["Analizar activo"]), analizarActivo);
 
 // GET /api/activo
 router.get('/:id', requirePermissions(["Obtener activo"]), getActivoById);
@@ -23,5 +26,6 @@ router.patch('/:id', requirePermissions(["Editar activo"]), updateActivo);
 
 // DELETE /api/activo
 router.delete('/image/:id_archivo', requirePermissions(["Eliminar imagen activo"]), deleteImagenActivo);
+router.delete('/:id', requirePermissions(["Eliminar activo"]), deleteActivo);
 
 module.exports = router;

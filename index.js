@@ -13,6 +13,10 @@ const clientRoutes = require('./routes/client.routes');
 const asesorRoutes = require('./routes/asesor.routes');
 const activoRoutes = require('./routes/activo.routes');
 const consumoRoutes = require('./routes/consumo.routes');
+const proveedorRoutes = require('./routes/proveedor.routes');
+const catalogoRoutes = require('./routes/catalogo.routes');
+const diagnosticoRoutes = require('./routes/diagnostico.routes');
+const planTrabajoRoutes = require('./routes/plan.trabajo.routes');
 
 const app = express();
 app.use(cors());
@@ -20,7 +24,7 @@ app.use(express.json());
 
 // ruta de prueba
 app.get('/api/ping', (req, res) => {
-  res.json({ msg: 'API ok 👌' });
+  res.json({ msg: 'API FINANZAS VERDES ok 👌' });
 });
 
 // montar rutas de roles bajo /api/roles
@@ -33,6 +37,10 @@ app.use('/api/client', auth, clientRoutes);
 app.use('/api/asesor', auth, asesorRoutes);
 app.use('/api/activo', auth, activoRoutes);
 app.use('/api/consumo', auth, consumoRoutes);
+app.use('/api/proveedor', auth, proveedorRoutes);
+app.use('/api/catalogo', auth, catalogoRoutes);
+app.use('/api/diagnostico', auth, diagnosticoRoutes);
+app.use('/api/plantrabajo', auth, planTrabajoRoutes);
 
 app.use(
   '/uploads',
@@ -40,7 +48,7 @@ app.use(
 );
 
 
-const PORT = 3000;
+const PORT = 4000;
 app.listen(PORT, () => {
-  console.log(`Servidor escuchando en http://localhost:${PORT}`);
+  console.log(`Servidor finanzas verdes escuchando en http://localhost:${PORT}`);
 });
