@@ -1,7 +1,7 @@
 // routes/roles.routes.js
 const express = require('express');
 const router = express.Router();
-const { createItem, getItemsMyCatalog, getItemById, updateItem, uploadImagenItem, deleteImagenItem } = require('../controllers/catalogo.controller');
+const { createItem, getItemsMyCatalog, getItemById, updateItem, uploadImagenItem, deleteImagenItem, testCatalogCrawler, obtenerProductosLaPipa, syncComercialCaldas, syncTodosLosCatalogos } = require('../controllers/catalogo.controller');
 const requirePermissions = require('../middleware/requirePermissions');
 const upload = require('../upload');
 
@@ -13,6 +13,7 @@ router.get('/:id', requirePermissions(["Obtener item catálogo"]), getItemById);
 // POST /api/roles
 router.post('/', requirePermissions(["Crear item catálogo"]), createItem);
 router.post('/upload', upload.single('image'), uploadImagenItem);
+router.post('/refresh', upload.single('image'), syncTodosLosCatalogos);
 
 // PATCH /api/roles
 router.patch('/:id', requirePermissions(["Editar item catálogo"]), updateItem);

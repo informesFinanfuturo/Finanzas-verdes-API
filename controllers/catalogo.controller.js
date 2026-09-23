@@ -4,6 +4,17 @@ const jwt = require('jsonwebtoken');
 const path = require('path');
 const fs = require('fs');
 const { uploadImagenActivo } = require('./activo.controller');
+const {
+  extractCatalogLaPipa,
+  removeDuplicates,
+} = require('../services/catalogos/laPipaCrawler');
+
+const {
+  extractCatalogComercialCaldas,
+  procesarFichasPorLotesAPowerAutomate,
+} = require(
+  '../services/catalogos/comercialCaldasCrawler'
+);
 
 // GET /api/catalogo
 async function createItem(req, res) {
@@ -512,6 +523,423 @@ async function deleteImagenItem(req, res) {
   }
 }
 
+async function obtenerProductosLaPipa(
+  req,
+  res
+) {
+
+  try {
+
+    const products =
+      await syncLaPipa();
+
+    return res.status(200).json({
+
+      total_productos:
+        products.length,
+
+      productos: products,
+
+      sincronizados: true,
+
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    return res.status(500).json({
+      error: err.message
+    });
+
+  }
+
+}
+
+async function syncCatalogProducts(
+  products,
+  idProveedor,
+  createdBy
+) {
+
+  const client =
+    await pool.connect();
+
+  try {
+
+    await client.query(
+      "BEGIN"
+    );
+
+    const urlsCatalogo =
+      products.map(
+        p => p.url
+      );
+
+    for (const product of products) {
+
+      await client.query(
+        `
+        INSERT INTO item_catalogo (
+          tipo_item,
+          nombre,
+          descripcion,
+          especificaciones,
+          precio_base,
+          disponible,
+          id_proveedor,
+          estado,
+          url_origen,
+          created_at,
+          created_by
+        )
+        VALUES (
+          $1,$2,$3,$4,$5,$6,$7,
+          'activo',
+          $8,
+          NOW(),
+          $9
+        )
+        ON CONFLICT (url_origen)
+        DO UPDATE SET
+          nombre = EXCLUDED.nombre,
+          descripcion = EXCLUDED.descripcion,
+          especificaciones = EXCLUDED.especificaciones,
+          precio_base = EXCLUDED.precio_base,
+          disponible = EXCLUDED.disponible,
+          updated_at = NOW()
+        `,
+        [
+          product.categoria,
+          product.nombre,
+          product.descripcion,
+          product.especificaciones,
+          product.precio,
+          product.disponible,
+          idProveedor,
+          product.url,
+          createdBy,
+        ]
+      );
+
+    }
+
+    // Productos que ya no existen
+    await client.query(
+      `
+      UPDATE item_catalogo
+      SET disponible = false,
+          updated_at = NOW()
+      WHERE id_proveedor = $1
+      AND url_origen NOT IN (
+        SELECT UNNEST($2::text[])
+      )
+      `,
+      [
+        idProveedor,
+        urlsCatalogo,
+      ]
+    );
+
+    await client.query(
+      "COMMIT"
+    );
+
+  } catch (error) {
+
+    await client.query(
+      "ROLLBACK"
+    );
+
+    throw error;
+
+  } finally {
+
+    client.release();
+
+  }
+}
+
+async function syncLaPipa() {
+
+  let products =
+    await extractCatalogLaPipa();
+
+  products =
+    removeDuplicates(
+      products
+    );
+
+  await syncCatalogProducts(
+    products,
+    5, // id proveedor La Pipa
+    1  // usuario sistema
+  );
+
+  return products;
+
+}
+
+async function syncComercialCaldas() {
+  /*
+   * 1. Extraer y depurar productos.
+   */
+  let products =
+    await extractCatalogComercialCaldas();
+
+  products =
+    removeDuplicates(products);
+
+  /*
+   * 2. Seleccionar productos que realmente
+   * tienen un PDF descargado.
+   */
+  const productsConPdf =
+    products.filter(
+      producto =>
+        producto.pdfContenido &&
+        producto.pdfContenido.length > 0
+    );
+
+  console.log(
+    `Productos encontrados: ${products.length}`
+  );
+
+  console.log(
+    `Productos con PDF: ${productsConPdf.length}`
+  );
+
+  let especificacionesPorUrl =
+    new Map();
+
+  /*
+   * 3. Procesar los PDF en lotes.
+   */
+  if (productsConPdf.length > 0) {
+    especificacionesPorUrl =
+      await procesarFichasPorLotesAPowerAutomate(
+        productsConPdf,
+        10
+      );
+  } else {
+    console.warn(
+      'No se encontraron productos con PDF. Se omite Power Automate.'
+    );
+  }
+
+  /*
+   * 4. Si enviamos documentos pero no se
+   * relacionó ninguno, detenemos el proceso.
+   */
+  if (
+    productsConPdf.length > 0 &&
+    especificacionesPorUrl.size === 0
+  ) {
+    throw new Error(
+      'Power Automate no devolvió especificaciones para ningún producto'
+    );
+  }
+
+  /*
+   * 5. Verificar que todos los productos
+   * enviados recibieron una respuesta.
+   */
+  if (
+    especificacionesPorUrl.size !==
+    productsConPdf.length
+  ) {
+    throw new Error(
+      'No todos los productos enviados a Power Automate recibieron especificaciones'
+    );
+  }
+
+  /*
+   * 6. Combinar productos y resultados.
+   */
+  const productsConSpecs =
+    products.map(
+      producto => {
+        const datosIA =
+          especificacionesPorUrl.get(
+            producto.url
+          );
+
+        /*
+         * Los productos sin PDF se conservan,
+         * pero no tienen información de IA.
+         */
+        if (!datosIA) {
+          return {
+            ...producto,
+
+            descripcion:
+              producto.descripcion ||
+              '',
+
+            especificaciones:
+              null,
+          };
+        }
+
+        /*
+         * Extraemos la descripción y dejamos
+         * el resto de campos como especificaciones.
+         */
+        const {
+          descripcion,
+          Descripcion,
+          NombreArchivo,
+          nombreArchivo,
+          Referencia,
+          referencia,
+          url,
+          ...especificaciones
+        } = datosIA;
+
+        const descripcionFinal =
+          descripcion ??
+          Descripcion ??
+          producto.descripcion ??
+          '';
+
+        /*
+         * Eliminar valores nulos o vacíos antes
+         * de guardar el JSON de especificaciones.
+         */
+        const especificacionesLimpias =
+          Object.fromEntries(
+            Object.entries(
+              especificaciones
+            ).filter(
+              ([, value]) =>
+                value !== null &&
+                value !== undefined &&
+                value !== ''
+            )
+          );
+
+        return {
+          ...producto,
+
+          descripcion:
+            descripcionFinal,
+
+          especificaciones:
+            Object.keys(
+              especificacionesLimpias
+            ).length > 0
+              ? especificacionesLimpias
+              : null,
+        };
+      }
+    );
+
+  /*
+   * 7. Comprobar cuántos productos terminaron
+   * con información de IA.
+   */
+  const productosConEspecificaciones =
+    productsConSpecs.filter(
+      producto =>
+        producto.especificaciones !==
+        null
+    ).length;
+
+  console.log(
+    'Productos con especificaciones listas para guardar:',
+    productosConEspecificaciones
+  );
+
+  /*
+   * 8. Mostrar una muestra antes de escribir
+   * en la base de datos.
+   */
+  const muestra =
+    productsConSpecs.find(
+      producto =>
+        producto.especificaciones
+    );
+
+  if (muestra) {
+    console.log(
+      'Muestra antes de guardar:',
+      JSON.stringify(
+        {
+          nombre:
+            muestra.nombre,
+          descripcion:
+            muestra.descripcion,
+          especificaciones:
+            muestra.especificaciones,
+        },
+        null,
+        2
+      )
+    );
+  }
+
+  /*
+   * 9. Guardar solamente cuando todos los
+   * lotes terminaron correctamente.
+   */
+  await syncCatalogProducts(
+    productsConSpecs,
+    6,
+    1
+  );
+
+  /*
+   * 10. Retirar Base64 de la respuesta.
+   */
+  return productsConSpecs.map(
+    ({
+      pdfContenido,
+      ...producto
+    }) => producto
+  );
+}
+
+async function syncTodosLosCatalogos(
+  req,
+  res
+) {
+
+  try {
+
+    const laPipa =
+      await syncLaPipa();
+    
+    const comercialCaldas =
+      await syncComercialCaldas();
+
+    const catalogo = [
+
+      ...laPipa,
+      comercialCaldas
+
+    ];
+
+    // return res.status(200).json({
+
+    //   total_productos:
+    //     catalogo.length,
+    //   productos: catalogo,
+    //   sincronizados: true,
+
+    // });
+
+  } catch (err) {
+
+    console.error(err);
+
+    return res.status(500).json({
+      error: err.message
+    });
+
+  }
+
+}
+
 module.exports = {
   createItem,
   getItemsMyCatalog,
@@ -519,4 +947,7 @@ module.exports = {
   updateItem,
   uploadImagenItem,
   deleteImagenItem,
+  obtenerProductosLaPipa,
+  syncTodosLosCatalogos,
+  syncComercialCaldas
 };

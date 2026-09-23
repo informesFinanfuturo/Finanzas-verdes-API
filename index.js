@@ -17,6 +17,7 @@ const proveedorRoutes = require('./routes/proveedor.routes');
 const catalogoRoutes = require('./routes/catalogo.routes');
 const diagnosticoRoutes = require('./routes/diagnostico.routes');
 const planTrabajoRoutes = require('./routes/plan.trabajo.routes');
+const calendarioRoutes = require('./routes/calendario.routes');
 
 const app = express();
 app.use(cors());
@@ -41,6 +42,7 @@ app.use('/api/proveedor', auth, proveedorRoutes);
 app.use('/api/catalogo', auth, catalogoRoutes);
 app.use('/api/diagnostico', auth, diagnosticoRoutes);
 app.use('/api/plantrabajo', auth, planTrabajoRoutes);
+app.use('/api/calendario', auth, calendarioRoutes);
 
 app.use(
   '/uploads',
@@ -49,6 +51,13 @@ app.use(
 
 
 const PORT = 4000;
+
+const {
+  iniciarScheduler
+} = require('./services/scheduler');
+ 
+iniciarScheduler();
+
 app.listen(PORT, () => {
   console.log(`Servidor finanzas verdes escuchando en http://localhost:${PORT}`);
 });

@@ -444,63 +444,246 @@ async function uploadImagenConsumo(req, res) {
   }
 }
 
-async function deleteImagenConsumo(req, res) {
+async function uploadDocumentoConsumo(req, res) {
+
+  const {
+    id_consumo,
+    created_by
+  } = req.body;
+
+  try {
+
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'El documento es obligatorio',
+      });
+    }
+
+    if (!id_consumo || !created_by) {
+      return res.status(400).json({
+        error: 'id_consumo y created_by son obligatorios',
+      });
+    }
+
+    const consumoExists =
+      await pool.query(
+        `
+        SELECT id_consumo
+        FROM consumo
+        WHERE id_consumo = $1
+        `,
+        [id_consumo]
+      );
+
+    if (
+      consumoExists.rows.length === 0
+    ) {
+      return res.status(404).json({
+        error: 'Consumo no encontrado',
+      });
+    }
+
+    const file = req.file;
+
+    const extension =
+      path
+        .extname(
+          file.originalname
+        )
+        .replace('.', '')
+        .toLowerCase();
+
+    const extensionesPermitidas = [
+      'pdf',
+      'doc',
+      'docx',
+      'xls',
+      'xlsx',
+      'csv'
+    ];
+
+    if (
+      !extensionesPermitidas.includes(
+        extension
+      )
+    ) {
+
+      return res.status(400).json({
+        error:
+          'Tipo de documento no permitido',
+      });
+
+    }
+
+    const archivoResult =
+      await pool.query(
+        `
+        INSERT INTO archivo (
+          nombre_original,
+          nombre_fisico,
+          extension,
+          mime,
+          ubicacion,
+          estado,
+          created_at,
+          updated_at,
+          created_by,
+          updated_by
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          'documento_consumo',
+          NOW(),
+          NULL,
+          $6,
+          NULL
+        )
+        RETURNING
+          id_archivo,
+          nombre_original,
+          nombre_fisico,
+          extension,
+          mime,
+          ubicacion
+        `,
+        [
+          file.originalname,
+          file.filename,
+          extension,
+          file.mimetype,
+          `uploads/${file.filename}`,
+          created_by
+        ]
+      );
+
+    const archivo =
+      archivoResult.rows[0];
+
+    await pool.query(
+      `
+      INSERT INTO consumo_archivo (
+        id_archivo,
+        id_consumo
+      )
+      VALUES ($1,$2)
+      `,
+      [
+        archivo.id_archivo,
+        id_consumo
+      ]
+    );
+
+    return res.status(201).json({
+
+      message:
+        'Documento subido correctamente',
+
+      archivo,
+
+    });
+
+  } catch (err) {
+
+    console.error(
+      'Error al subir documento:',
+      err
+    );
+
+    return res.status(500).json({
+      error:
+        'Error interno al subir documento',
+    });
+
+  }
+
+}
+
+async function deleteArchivoConsumo(req, res) {
+
   const { id_archivo } = req.params;
 
   try {
-    // 1️⃣ Validar
+
     if (!id_archivo) {
       return res.status(400).json({
         error: 'id_archivo es obligatorio',
       });
     }
 
-    // 2️⃣ Obtener archivo
-    const archivoResult = await pool.query(
-      'SELECT * FROM archivo WHERE id_archivo = $1',
-      [id_archivo]
-    );
+    const archivoResult =
+      await pool.query(
+        `
+        SELECT *
+        FROM archivo
+        WHERE id_archivo = $1
+        `,
+        [id_archivo]
+      );
 
-    if (archivoResult.rows.length === 0) {
+    if (
+      archivoResult.rows.length === 0
+    ) {
       return res.status(404).json({
-        error: 'Archivo no encontrado',
+        error:
+          'Archivo no encontrado',
       });
     }
 
-    const archivo = archivoResult.rows[0];
+    const archivo =
+      archivoResult.rows[0];
 
-    // ✅ Ruta física
-    const filePath = path.join(__dirname, '..', archivo.ubicacion);
+    const filePath =
+      path.join(
+        __dirname,
+        '..',
+        archivo.ubicacion
+      );
 
-    // 3️⃣ Eliminar relaciones
     await pool.query(
-      'DELETE FROM consumo_archivo WHERE id_archivo = $1',
+      `
+      DELETE FROM consumo_archivo
+      WHERE id_archivo = $1
+      `,
       [id_archivo]
     );
 
-    // 4️⃣ Eliminar registro archivo
     await pool.query(
-      'DELETE FROM archivo WHERE id_archivo = $1',
+      `
+      DELETE FROM archivo
+      WHERE id_archivo = $1
+      `,
       [id_archivo]
     );
 
-    // 5️⃣ Eliminar archivo físico (si existe)
-    if (fs.existsSync(filePath)) {
+    if (
+      fs.existsSync(filePath)
+    ) {
       fs.unlinkSync(filePath);
     }
 
-    // 6️⃣ Respuesta
     return res.status(200).json({
-      message: 'Imagen eliminada correctamente',
+      message:
+        'Archivo eliminado correctamente',
     });
 
   } catch (err) {
-    console.error('Error al eliminar imagen:', err);
+
+    console.error(
+      'Error al eliminar archivo:',
+      err
+    );
 
     return res.status(500).json({
-      error: 'Error interno al eliminar imagen',
+      error:
+        'Error interno al eliminar archivo',
     });
+
   }
+
 }
 
 async function analizarConsumo(req, res) {
@@ -575,13 +758,54 @@ async function analizarConsumo(req, res) {
     const consumoActual = consumoResult.rows[0];
 
     // ✅ 3. Preparar imágenes para IA
-    const imagePaths = (consumoActual.imagenes || [])
-      .map((img) => img?.ubicacion)
-      .filter(Boolean)
-      .map((ubicacion) => path.join(__dirname, '..', ubicacion));
+    const archivos =
+  consumoActual.imagenes || [];
+
+const imagePaths = archivos
+  .filter(img =>
+    [
+      'jpg',
+      'jpeg',
+      'png',
+      'webp'
+    ].includes(
+      (img.extension || '')
+        .toLowerCase()
+    )
+  )
+  .map(img =>
+    path.join(
+      __dirname,
+      '..',
+      img.ubicacion
+    )
+  );
+
+const documentPaths = archivos
+  .filter(img =>
+    [
+      'pdf',
+      'doc',
+      'docx',
+      'xls',
+      'xlsx',
+      'csv'
+    ].includes(
+      (img.extension || '')
+        .toLowerCase()
+    )
+  )
+  .map(img =>
+    path.join(
+      __dirname,
+      '..',
+      img.ubicacion
+    )
+  );
 
     // ✅ 4. IA genérica + configurable por endpoint
     const datosIA = await askAIStructured({
+      modelo: "gemini-3.1-flash-lite",
       role: `
       Eres un analista experto en interpretación de facturas de servicios públicos domiciliarios de Colombia (energía eléctrica, agua potable y gas natural).
       Tu función es analizar una o varias fotografías de una factura y extraer exclusivamente la información visible en el documento.
@@ -617,6 +841,10 @@ async function analizarConsumo(req, res) {
         observaciones: consumoActual.observaciones,
       },
       outputSchemaExample: {
+        "tipo" : `Enum(
+          "Agua",
+          "Energía"
+        )`,
         "proveedor": `Enum(
           "Chec",
           "Aguas de Manizales",
@@ -642,22 +870,62 @@ async function analizarConsumo(req, res) {
         "Nunca inventes valores.",
         "Si un dato no puede determinarse con suficiente confianza, devuelve null.",
         "Si existen diferencias entre la factura y el ContextData, prioriza siempre la información de la factura.",
-        'Para el campo valor, identifica el costo asociado al servicio, ignorando mora, saldos pendientes, aportes, subsidios u otros conceptos que vengan incluidos en la factura, busca siempre secciones que digan explícitamente cosas como "total periodo actual", "valor servicio energía", "servicio público" o similares. Ignora campos relacionados a valor de aporte, saldo pendiente o saldo en mora. Toma este valor siempre en pesos colombianos, el carácter "." representa miles, no decimales. Ignóralo.',
+        `
+        Para el campo valor sigue estrictamente este orden:
+        1. Busca primero el valor asociado exclusivamente al consumo del servicio principal facturado (Agua, Energía o Gas).
+        2. Excluye explícitamente:
+          - Alumbrado público.
+          - Aseo.
+          - Aprovechamiento.
+          - Tasa ambiental.
+          - Sobretasas.
+          - Contribuciones.
+          - Intereses.
+          - Financiaciones.
+          - Otros conceptos distintos al servicio principal.
+        3. Si la factura discrimina cargos:
+          - Utiliza únicamente los conceptos relacionados con el servicio principal.
+        4. Si existe una línea llamada:
+          - Valor servicio.
+          - Total servicio.
+          - Servicio energía.
+          - Servicio acueducto.
+          - Total período actual.
+          - Consumo del período.
+          utiliza preferentemente ese valor.
+        5. Solo si NO es posible aislar el costo del servicio principal utiliza el total factura.
+        6. Si se usa el total factura porque no existe desglose suficiente, registra esta situación en observacion_ia.
+        `,
         "Si la factura discrimina cargos como: cargo fijo, consumo, subsidios, contribuciones o impuestos, intenta aislar el valor del consumo.",
         "Si solo está disponible el valor total de la factura y no se puede separar el consumo, usa el valor total y registra una observación indicando esta situación.",
         "Para el campo consumo, selecciona el consumo correspondiente al período actual facturado.",
         "Para el cálculo del costo unitario utiliza únicamente los cargos asociados directamente al suministro o prestación de servicio. Excluye explícitamente tasas, contribuciones, subsidios, entre otros cobros no relacionados con el consumo del servicio. En facturas de agua considera unicamente los costos de acueducto y alcantarillado. Si existen varios costos unitarios debes calcular el costo unitario como el promedio unicamente entre los costos válidos, no utilices tasas para calcular el costo unitario.",
         "Si existe un consumo promedio explícito en la factura, extráelo como consumo promedio.",
-        "Extrae siempre los consumos históricos visibles de tablas, gráficos o listados, asegurándote de que sean los pertenecientes a meses anteriores, no promedios ni el mes actual. Nunca inventes los consumos, si solo hay 4 o 5 meses anteriores no inventes para completar 6. Mantén los valores en orden cronológico del más antiguo al más reciente, siempre extrayendo el consumo unitario (en m3 o kwh), nunca otros datos históricos.",
+        "Extrae siempre los consumos históricos visibles de tablas, gráficos o listados, asegurándote de que sean los pertenecientes a meses anteriores, no promedios ni el mes actual. Nunca inventes los consumos, si solo hay 4 o 5 meses anteriores no inventes para completar 6. Siempre extrae el consumo unitario (en m3 o kwh), nunca otros datos históricos.",
+        `
+        Cuando extraigas consumos históricos:
+
+        1. Identifica primero la referencia temporal asociada a cada consumo:
+          - mes,
+          - período,
+          - fecha,
+          - etiqueta del eje horizontal.
+        2. Nunca determines el orden únicamente por la posición visual de los valores dentro de la imagen.
+        3. Reconstruye primero pares:
+          (periodo, consumo)
+        4. Ordena los consumos utilizando la fecha o período identificado y no la ubicación gráfica.
+        5. Si existe ambigüedad sobre el orden cronológico, registra la situación en observacion_ia.
+        `,
         "Normaliza todas las fechas al formato YYYY-MM-DD.",
         "Normaliza todos los valores numéricos sin símbolos monetarios, sin separadores de miles y usando punto decimal.",
         "La unidad debe ser exactamente uno de los siguientes valores cuando corresponda: kWh, m3, m³, Litros, Galones, Otro.",
         "Si detectas información incompleta, inconsistente o baja calidad visual, regístralo en el campo observaciones.",
         "La respuesta debe ser exclusivamente un objeto JSON válido.",
         "No incluyas explicaciones, comentarios ni texto adicional.",
-        "En el campo de observacion_ia, explica qué datos utilizaste o qué aproximaciones hiciste para llegar las conclusiones y a los indicadores."
+        "En el campo de observacion_ia, explica qué datos utilizaste o qué aproximaciones hiciste para llegar las conclusiones y a los indicadores. Unicamente en este campo este campo debes usar formato de moneda para representar los costos"
       ],
       imagePaths,
+      documentPaths
     });
 
     // ✅ 5. Normalizadores
@@ -717,6 +985,8 @@ async function analizarConsumo(req, res) {
 
     // ✅ 6. Mezclar IA + valores actuales
     const finalData = {
+        tipo:
+            normalizeString(datosIA.tipo) ?? consumoActual.tipo ?? null,
         proveedor:
             normalizeString(datosIA.proveedor) ?? consumoActual.proveedor ?? null,
 
@@ -754,19 +1024,21 @@ async function analizarConsumo(req, res) {
       `
       UPDATE consumo
       SET
-        proveedor = $1,
-        periodo_inicio = $2,
-        periodo_fin = $3,
-        valor = $4,
-        consumo = $5,
-        unidad = $6,
-        observacion_ia = $7,
-        costo_unitario = $8,
+        tipo = $1,
+        proveedor = $2,
+        periodo_inicio = $3,
+        periodo_fin = $4,
+        valor = $5,
+        consumo = $6,
+        unidad = $7,
+        observacion_ia = $8,
+        costo_unitario = $9,
         updated_at = NOW()
-      WHERE id_consumo = $9
+      WHERE id_consumo = $10
       RETURNING *
       `,
       [
+        finalData.tipo,
         finalData.proveedor,
         finalData.periodo_inicio,
         finalData.periodo_fin,
@@ -873,7 +1145,8 @@ module.exports = {
   updateConsumo,
   getConsumoById,
   uploadImagenConsumo,
-  deleteImagenConsumo,
+  uploadDocumentoConsumo,
+  deleteArchivoConsumo,
   analizarConsumo,
   deleteConsumo,
 };

@@ -4,6 +4,7 @@ const pool = require('../db');
 const { findCiiuByCode } = require('../services/ciiuService');
 const { sendWelcomeEmail } = require('../utils/authMail');
 const { isDocumentoONit, isNitJuridico } = require('../utils/validators');
+const { construirDiagnosticosCompletos } = require('./diagnostico.controller');
 
 // GET /api/client
 async function getClients(req, res) {
@@ -24,6 +25,7 @@ async function getClients(req, res) {
         m.municipio,
         m.tipo_empresa,
         u.estado,
+        u.estado_observaciones,
         u.created_at
 
       FROM usuario u
@@ -38,10 +40,64 @@ async function getClients(req, res) {
         ON m.id_mipyme = mu.id_mipyme
 
       WHERE r.nombre_rol = 'Cliente'
-        AND COALESCE(u.estado, 'activo') != 'inactivo'
+      AND u.estado = 'activo'
 
       ORDER BY u.created_at DESC
       `
+    );
+
+    return res.status(200).json({
+      clients: result.rows,
+    });
+
+  } catch (err) {
+    console.error('Error al listar clientes:', err);
+    return res.status(500).json({
+      error: 'Error interno al listar clientes',
+    });
+  }
+}
+
+async function getClientsByEstado(req, res) {
+  const { estado } = req.headers
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        u.id_usuario,
+        u.nombre_usuario,
+        u.email,
+        u.documento,
+        u.telefono,
+
+        r.nombre_rol,
+        r.id_rol,
+
+        m.nombre_mipyme,
+        m.municipio,
+        m.tipo_empresa,
+        u.estado,
+        u.estado_observaciones,
+        u.created_at
+
+      FROM usuario u
+
+      LEFT JOIN rol r
+        ON r.id_rol = u.id_rol
+
+      LEFT JOIN mipyme_usuario mu
+        ON mu.id_usuario = u.id_usuario
+
+      LEFT JOIN mipyme m
+        ON m.id_mipyme = mu.id_mipyme
+
+      WHERE r.nombre_rol = 'Cliente'
+      AND u.estado = $1
+
+      ORDER BY u.created_at DESC
+      `,
+      [estado]
     );
 
     return res.status(200).json({
@@ -176,7 +232,8 @@ async function updateClient(req, res) {
     email,
     telefono,
     estado,
-    updated_by, // ✅ obligatorio
+    updated_by,
+    estado_observaciones
   } = req.body;
 
   try {
@@ -245,6 +302,7 @@ async function updateClient(req, res) {
     if (email) add('email', email.trim());
     if (telefono !== undefined) add('telefono', telefono);
     if (estado !== undefined) add('estado', estado);
+    if (estado_observaciones !== undefined) add('estado_observaciones', estado_observaciones);
 
     // ✅ Auditoría SIEMPRE
     fields.push('updated_at = NOW()');
@@ -269,6 +327,7 @@ async function updateClient(req, res) {
         telefono,
         estado,
         updated_at,
+        estado_observaciones,
         updated_by
       `,
       [...values, idUsuario]
@@ -336,6 +395,7 @@ async function getClienteFull(req, res) {
             'tipo', a.tipo,
             'descripcion', a.descripcion,
             'datos', a.datos,
+            'cantidad', a.cantidad,
             'estado', a.estado
           )
         ) FILTER (WHERE a.id_activo IS NOT NULL) AS activos,
@@ -353,17 +413,6 @@ async function getClienteFull(req, res) {
             'estado', c.estado
           )
         ) FILTER (WHERE c.id_consumo IS NOT NULL) AS facturas,
-
-        -- ✅ DIAGNÓSTICOS
-        jsonb_agg(
-          DISTINCT jsonb_build_object(
-            'id_diagnostico', d.id_diagnostico,
-            'titulo', d.titulo,
-            'problema', d.problema,
-            'beneficios', d.beneficios,
-            'estado', d.estado
-          )
-        ) FILTER (WHERE d.id_diagnostico IS NOT NULL) AS diagnosticos,
 
         -- ✅ PLANES DE TRABAJO + TAREAS + MÉTRICAS
         planes_data.planes_trabajo
@@ -384,10 +433,6 @@ async function getClienteFull(req, res) {
       LEFT JOIN consumo c 
         ON c.id_mipyme = m.id_mipyme
       AND COALESCE(c.estado, 'activo') != 'eliminado'
-
-      LEFT JOIN diagnostico d 
-        ON d.id_mipyme = m.id_mipyme
-      AND COALESCE(d.estado, 'activo') != 'eliminado'
 
       -- ✅ SUBQUERY PLANES
       LEFT JOIN (
@@ -480,6 +525,32 @@ async function getClienteFull(req, res) {
 
     const row = result.rows[0];
 
+    const diagnosticos =
+      row.id_mipyme
+        ? await construirDiagnosticosCompletos(
+            row.id_mipyme
+          )
+        : [];
+
+    const visitasResult =
+    await pool.query(
+      `
+      SELECT c.titulo, 
+      c.fecha_hora, 
+      c.direccion, 
+      c.descripcion, 
+      c.id_calendario 
+      FROM calendario c
+      INNER JOIN usuario_calendario uc ON c."id_calendario" = uc."id_calendario"
+      INNER JOIN usuario u ON u.id_usuario = uc."id_usuario"
+      WHERE u.id_usuario = $1
+      ORDER BY id_calendario DESC 
+      `,
+      [idUsuario]
+    )
+
+    const visitas = visitasResult.rows;
+
     return res.status(200).json({
       user: {
         id_usuario: row.id_usuario,
@@ -519,8 +590,9 @@ async function getClienteFull(req, res) {
 
       activos: row.activos ?? [],
       facturas: row.facturas ?? [],
-      diagnosticos: row.diagnosticos ?? [],
+      diagnosticos,
       planes_trabajo: row.planes_trabajo ?? [],
+      visitas: visitas ?? [],
     });
 
   } catch (err) {
@@ -1052,7 +1124,7 @@ async function getPreviewInfoClient(req, res) {
         ON m.id_mipyme = mu.id_mipyme
        AND COALESCE(m.estado, 'activo') != 'eliminado'
 
-      -- 🔥 ACTIVOS COMPLETOS
+    
       LEFT JOIN (
         SELECT
           a.id_mipyme,
@@ -1066,6 +1138,7 @@ async function getPreviewInfoClient(req, res) {
               'modelo', a.modelo,
               'descripcion', a.descripcion,
               'datos', a.datos,
+              'observacion_ia', a.observacion_ia,
               'estado', a.estado,
               'id_mipyme', a.id_mipyme,
               'created_at', a.created_at,
@@ -1652,7 +1725,7 @@ async function createClientWithMipyme(req, res) {
         created_at,
         created_by
       )
-      VALUES ($1, $2, $3, $4, $5, $6, 'activo', NOW(), $7)
+      VALUES ($1, $2, $3, $4, $5, $6, 'nuevo', NOW(), $7)
       RETURNING *
       `,
       [
@@ -1913,4 +1986,5 @@ module.exports = {
   createClientWithMipyme,
   inactiveClient,
   searchClientByNitOrDocumento,
+  getClientsByEstado
 };

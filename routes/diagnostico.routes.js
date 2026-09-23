@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const requirePermissions = require('../middleware/requirePermissions');
 const upload = require('../upload');
-const { generarYSyncDiagnosticos, getMisDiagnosticos } = require('../controllers/diagnostico.controller');
+const { generarYSyncDiagnosticos, getMisDiagnosticos, guardarSeleccionActivos } = require('../controllers/diagnostico.controller');
 
 // POST /api/activo
 router.post('/generar', requirePermissions(["Generar diagnóstico"]), generarYSyncDiagnosticos);
@@ -11,6 +11,8 @@ router.post('/generar', requirePermissions(["Generar diagnóstico"]), generarYSy
 
 // GET /api/activo
 router.get('/', requirePermissions(["Obtener diagnósticos"]), getMisDiagnosticos);
+
+router.patch('/:idDiagnostico/seleccion-activos', requirePermissions(["Obtener diagnósticos"]), guardarSeleccionActivos);
 
 // PATCH /api/activo
 //router.patch('/:id', requirePermissions(["Editar activo"]), updateActivo);

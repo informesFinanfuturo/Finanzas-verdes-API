@@ -1,4 +1,6 @@
 const pool = require('../db');
+const { chromium } = require('playwright');
+
 
 async function createTipoProveedor(req, res) {
   const {

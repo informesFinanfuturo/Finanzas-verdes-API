@@ -28,6 +28,7 @@ Thumbs.db
 
 # Uploads (archivos del usuario)
 uploads/
+temp/
 
 # Optional config
 .vscode/

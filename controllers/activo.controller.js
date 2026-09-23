@@ -118,6 +118,7 @@ async function getActivoById(req, res) {
         a.estado,
         a.observacion_ia,
         a.id_mipyme,
+        a.cantidad,
         a.created_at,
         a.updated_at,
         a.created_by,
@@ -178,9 +179,9 @@ async function updateActivo(req, res) {
     descripcion,
     marca,
     modelo,
-    datos,
     estado_activo,
     updated_by,
+    cantidad
   } = req.body;
 
   try {
@@ -188,6 +189,12 @@ async function updateActivo(req, res) {
     if (Number.isNaN(idActivo)) {
       return res.status(400).json({
         error: 'El id del activo debe ser numérico',
+      });
+    }
+    
+    if (Number.isNaN(cantidad)) {
+      return res.status(400).json({
+        error: 'La cantidad del activo debe ser numérica',
       });
     }
 
@@ -264,9 +271,9 @@ async function updateActivo(req, res) {
     if (modelo !== undefined) {
       add('modelo', clean(modelo));
     }
-
-    if (datos !== undefined) {
-      add('datos', datos);
+    
+    if (cantidad !== undefined) {
+      add('cantidad', clean(cantidad));
     }
 
     if (estado_activo !== undefined) {
@@ -747,7 +754,8 @@ async function analizarActivo(req, res) {
         a.descripcion,
         a.datos,
         a.estado,
-        a.id_mipyme,
+        a.id_mipyme, 
+        a.cantidad,
         a.created_at,
         a.updated_at,
         a.created_by,
@@ -772,7 +780,7 @@ async function analizarActivo(req, res) {
         ON aa.id_activo = a.id_activo
       LEFT JOIN archivo ar
         ON ar.id_archivo = aa.id_archivo
-
+ 
       WHERE 
         a.id_activo = $1
         AND COALESCE(a.estado, 'activo') != 'eliminado'
@@ -849,21 +857,82 @@ async function analizarActivo(req, res) {
     // ✅ 6. Llamada a IA
     const datosIA = await askAIStructured({
       role: `
-      Eres un especialista en inventario técnico de activos operativos, eficiencia de recursos y sostenibilidad empresarial para micro y pequeñas empresas.
-      Tu función es analizar fotografías de equipos, electrodomésticos, maquinaria ligera, sistemas de iluminación, equipos de climatización, sistemas de bombeo, equipos de cocina, equipos industriales ligeros y cualquier otro activo que pueda generar consumos de energía, agua o gas.
-      Debes actuar como un inspector técnico conservador y objetivo. Tu responsabilidad es identificar información verificable observada en las imágenes sin asumir características no visibles.
+        Eres un especialista en inventario técnico de activos operativos, eficiencia de recursos y sostenibilidad empresarial para micro y pequeñas empresas.
+ 
+        Tu función es analizar fotografías de equipos, electrodomésticos, maquinaria ligera, sistemas de iluminación, equipos de climatización, sistemas de bombeo, equipos de cocina, equipos industriales ligeros y cualquier otro activo que pueda generar consumos de energía, agua o gas.
+ 
+        Debes actuar como un inspector técnico conservador, verificable y objetivo.
+ 
+        Tu responsabilidad es identificar información técnica real utilizando tres fuentes posibles:
+ 
+        1. Información visible en las imágenes.
+        2. Información obtenida mediante Google Search.
+        3. Información proporcionada en el contexto.
+ 
+        Nunca utilices conocimiento propio para completar información faltante.
       `,
       taskDescription: `
-      Analiza las imágenes proporcionadas e identifica el activo observado.
-      Extrae toda la información técnica disponible en:
-      - Placas técnicas.
-      - Etiquetas de fabricante.
-      - Etiquetas de eficiencia.
-      - Fichas técnicas.
-      - Manuales.
-      - Características visibles del equipo.
-      Tu objetivo es construir una ficha descriptiva del activo que permita posteriormente evaluar su impacto sobre el consumo de recursos.
-      Cuando varias imágenes pertenezcan al mismo activo debes consolidar toda la información disponible en una única respuesta.
+        FASE 1. EXTRACCIÓN VISUAL
+ 
+        Extrae toda la información visible en:
+ 
+        - Placas técnicas.
+        - Etiquetas de fabricante.
+        - Etiquetas energéticas.
+        - Manuales.
+        - Fichas técnicas visibles.
+        - Logotipos.
+        - Referencias.
+        - Números de serie.
+        - Modelos.
+        - Características físicas observables.
+ 
+        Si existen varias fotografías del mismo activo debes consolidar toda la información encontrada.
+ 
+        Prioriza siempre:
+ 
+        1. Placas técnicas.
+        2. Información del fabricante.
+        3. Etiquetas de eficiencia.
+        4. Información visible impresa en el equipo.
+ 
+        Conserva las unidades originales observadas.
+ 
+        FASE 2. BÚSQUEDA WEB OBLIGATORIA
+ 
+        Debes realizar una búsqueda web obligatoriamente cuando ocurra cualquiera de las siguientes situaciones:
+ 
+        - La marca sea desconocida.
+        - El modelo sea desconocido.
+        - Exista un logotipo visible.
+        - Exista texto parcial visible.
+        - Exista una referencia parcial visible.
+        - No exista una placa técnica o esté incompleta.
+        - Existan datos insuficientes para identificar el activo.
+        - Existan datos insuficientes para calcular consumos, costos o huella de carbono.
+ 
+        No puedes finalizar el análisis sin intentar una búsqueda web cuando se cumpla alguna de estas condiciones.
+ 
+        Durante la búsqueda:
+ 
+        1. Busca coincidencias usando logos visibles.
+        2. Busca coincidencias usando textos visibles.
+        3. Busca coincidencias usando números de serie.
+        4. Busca coincidencias usando referencias parciales.
+        5. Busca coincidencias usando características físicas observables.
+        6. Prioriza siempre información publicada por fabricantes o distribuidores oficiales.
+ 
+        Si después de la búsqueda no existe evidencia suficiente, devuelve null.
+ 
+        FASE 3. TRAZABILIDAD OBLIGATORIA
+ 
+        Toda información obtenida mediante búsqueda web debe:
+ 
+        - Reportarse explícitamente.
+        - Diferenciarse de la información observada en imágenes.
+        - Incluir las URLs utilizadas.
+        - Incluir las consultas realizadas.
+        - Incluir las fuentes utilizadas.
       `,
       contextData: {
         activo : {
@@ -871,63 +940,243 @@ async function analizarActivo(req, res) {
           "tipo": activo.tipo,
           "marca": activo.marca,
           "modelo": activo.modelo,
+          "cantidad": activo.cantidad,
           "descripcion": activo.descripcion,
         },
         facturas_mipyme: facturas,
       },
  
-      // 🔥 ESTE JSON ES EL QUE DEFINE LOS "VALORES PARAMETRIZADOS" QUE QUIERES EXTRAER
-      // Puedes cambiar estos campos por los que necesite cada endpoint
       outputSchemaExample: {
         "marca": "String | null",
         "modelo": "String | null",
         "observacion_ia": "String | null",
         "datos" : {
-          "Huella de carbono" : "float | null",
-          "Costo mensual" : "float | null",
+          // "Huella de carbono" : "float | null",
+          // "Costo mensual" : "float | null",
           "Impacto" : '"Alto" | "Medio" | "Bajo"',
           "Nivel de confianza" : "int | null"
-        }
+        },
+        "utilizo_busqueda_web": false,
+        "consultas_realizadas": [],
+        "fuentes": [],
       },
  
       rules: [
-        "Extrae únicamente información visible en las imágenes.",
-        `Nunca inventes:
-          - Potencias.
-          - Caudales.
-          - Consumos.
-          - Capacidades.
-          - Modelos.
-          - Clasificaciones.`,
-        "Si un valor no puede determinarse con suficiente confianza utiliza null",
-        "Si existen varias fotografías del mismo activo, combina la información encontrada en todas ellas.",
         `
-        Prioriza la información encontrada en:
-        - Placas técnicas.
-        - Fichas técnicas.
-        - Etiquetas de desempeño.
-        - Información del fabricante.
+        REGLAS GENERALES
+ 
+          Reporta únicamente información:
+ 
+          - Visible en las imágenes.
+          - Presente en el contexto.
+          - Obtenida mediante búsqueda web.
+ 
+          Nunca inventes datos específicos.
+ 
+          Sin embargo, si después de realizar una búsqueda web no existe información exacta del activo, puedes utilizar información de equipos equivalentes o modelos similares encontrados en fuentes confiables.
+ 
+          Toda estimación debe:
+ 
+          - Basarse en fuentes encontradas durante la búsqueda web.
+          - Ser explícitamente marcada como estimación.
+          - Indicar la fuente utilizada.
+          - Indicar el nivel de incertidumbre.
+          - Reducir el nivel de confianza.
+ 
+          Si no encuentras información específica del activo:
+ 
+          1. Busca modelos equivalentes del mismo fabricante.
+          2. Busca equipos de características similares.
+          3. Busca equipos de capacidad similar.
+          4. Busca equipos de la misma categoría de uso.
+ 
+          Si existe información razonablemente comparable:
+ 
+          - Devuelve una estimación fundamentada.
+          - Explica claramente la metodología.
+          - Marca el dato como estimado.
+ 
+          Sólo utiliza null cuando no exista información suficiente para realizar una estimación razonable.
+ 
+          No realices estimaciones sin evidencia verificable.
+ 
+          No utilices conocimiento propio.
+ 
+          Si la calidad de alguna imagen dificulta el análisis, indícalo en observacion_ia.
+ 
+          Utiliza doble salto de línea slash n (Saltos de línea para strings de flutter) dentro de observacion_ia para mejorar la legibilidad.
+ 
+          La respuesta debe contener exclusivamente un JSON válido.
+ 
+          CÁLCULO DE INDICADORES
+ 
+          Sólo puedes calcular:
+ 
+          - Costo mensual.
+ 
+          cuando existan datos verificables de consumo o potencia obtenidos mediante:
+ 
+          - Placa técnica.
+          - Fabricante.
+          - Ficha técnica.
+          - Búsqueda web verificable.
+ 
+          Si no existe información suficiente:
+ 
+          Costo mensual = null
+ 
+          No realices aproximaciones arbitrarias.
+ 
+          Sí puedes realizar estimaciones fundamentadas cuando:
+ 
+          - Existan referencias similares encontradas en internet.
+          - Existan activos equivalentes documentados.
+          - Existan rangos de consumo publicados.
+ 
+          Debes explicar claramente:
+ 
+          - Qué datos fueron observados.
+          - Qué datos fueron encontrados en internet.
+          - Qué datos fueron estimados.
+          - Por qué la estimación es razonable.
+ 
+          ──────────────────────────────
+ 
+          OBSERVACION_IA
+ 
+          En observacion_ia debes explicar detalladamente:
+ 
+          - Qué tipo de activo fue identificado y cuál fue el nivel de certeza de la identificación.
+ 
+          - Qué elementos físicos visibles permitieron identificar el activo (marca, modelo, paneles, controles, conexiones, dimensiones aparentes, componentes visibles, etiquetas, placa técnica, accesorios y estado físico observable).
+ 
+          - Qué función cumple el activo y para qué tipo de operación o uso está diseñado.
+ 
+          - Explicar en lenguaje natural cada característica técnica identificada.
+ 
+          - Para cada característica técnica encontrada indicar:
+            * cuál es el valor identificado,
+            * qué significa técnicamente,
+            * cómo impacta el funcionamiento del equipo,
+            * cómo influye en su capacidad, rendimiento, eficiencia o consumo energético,
+            * y si el dato fue observado, obtenido mediante búsqueda web o estimado.
+ 
+          - Explicar la relación entre las especificaciones técnicas identificadas y el uso esperado del activo.
+ 
+          - Describir la capacidad operativa del equipo utilizando las características encontradas.
+ 
+          - Explicar las ventajas o implicaciones operativas de las características identificadas cuando sea posible sustentarlo con evidencia encontrada.
+ 
+          - Incluir una descripción narrada del activo como si se estuviera elaborando un informe técnico de inspección.
+ 
+          - Describir el estado visual observable del activo, incluyendo señales visibles de desgaste, deterioro, modificaciones, suciedad, corrosión, daños o condiciones relevantes cuando sean evidentes en las imágenes.
+ 
+          - Diferenciar claramente los datos observados en las imágenes, los obtenidos mediante búsqueda web y los estimados.
+ 
+          - Explicar por qué cada estimación realizada es razonable y cuál fue la evidencia utilizada.
+ 
+          - Si se utilizaron equipos equivalentes o modelos similares, explicar cuáles fueron, por qué fueron seleccionados y cuáles características se tomaron como referencia.
+ 
+          - Si existen varias características técnicas identificadas, no limitarse a listarlas; debe explicarse individualmente cada una en lenguaje natural.
+ 
+          - Toda característica incluida dentro del objeto datos debe ser mencionada y explicada también dentro de observacion_ia.
+ 
+          - La observacion_ia debe redactarse como un informe técnico descriptivo y analítico, no como una lista de atributos o una simple transcripción de especificaciones.
+ 
+          - Incluir una sección final denominada "Conclusión técnica" donde se resuma la identificación del activo, sus características más relevantes, el nivel de confianza alcanzado y las principales limitaciones del análisis.
+                  `,
+                  `
+                    Dentro del objeto datos debes incluir también dinámicamente todas las características técnicas identificadas.
+ 
+          Ejemplos:
+ 
+          - voltaje
+          - potencia
+          - corriente
+          - capacidad
+          - capacidad de refrigeración
+          - eficiencia energética
+          - caudal
+          - presión
+          - consumo de agua
+          - consumo de energía
+          - consumo de gas
+          - temperatura máxima
+          - cantidad de bandejas
+          - cantidad de cámaras
+ 
+          No existe un conjunto fijo de características.
+ 
+          Debes incluir todas las que encuentres y únicamente las que puedas verificar.
         `,
-        "Conserva los valores utilizando las unidades originales observadas.",
-        "Si aparecen múltiples capacidades o consumos, extrae todos aquellos claramente identificados.",
         `
-        Registra cualquier información relevante relacionada con:
-        -  Consumo de energía.
-        -  Consumo de agua.
-        -  Consumo de gas.
-        -  Eficiencia.
-        -  Capacidad operativa.
+          Nivel de confianza:
+ 
+          10 = Placa técnica completa del activo.
+          9 = Información oficial exacta del fabricante.
+          8 = Ficha técnica exacta del modelo.
+          7 = Modelo equivalente del mismo fabricante.
+          6 = Equipo muy similar encontrado en internet.
+          5 = Promedio de varios equipos equivalentes.
+          4 = Estimación aproximada basada en categoría.
+          3 o menor = Evidencia insuficiente.
         `,
-        //"No utilices conocimiento externo para completar información faltante.",
-        "Si la calidad de la imagen dificulta la extracción, regístralo en observaciones.",
-        "La respuesta debe contener exclusivamente un objeto JSON válido.",
-        "El objeto de salida datos debe contener obligatoriamente las llaves Huella de carbono, Costo mensual, Impacto y Nivel de confianza. Además debe contener dinámicamente todas las características técnicas identificadas en las imágenes. Por ejemplo: voltaje, potencia, consumo de agua, consumo de gas, capacidad, caudal, presión, eficiencia energética, capacidad de refrigeración. No existe un conjunto fijo de especificaciones, se deben de incluir las que se encuentren para el activo analizado.",
-        "Para calcular la huella de carbono utiliza el consumo nominal del activo multiplicado por el uso aproximado que se le da, para huella de carbono por energía multiplica también por el factor 0,097kgCo2e/kwh, para la huella de carbono por gas natural usa 56100kgCo2e/TJ",
-        "Para el costo mensual utiliza la cantidad consumida por el activo y el tiempo de uso (Que en su mayoría estará en la descripción del activo) multiplicado por el valor unitario (ejemplo: si una nevera consume 150kwh mensual y el precio del kwh es $900 entonces el costo mensual aproximado es de $94500)",
-        "El nivel de confianza es una medida del 1 al 10 de que tan confiables son los datos que extragiste",
-        "En el campo de observacion_ia, explica qué datos utilizaste o qué aproximaciones hiciste para llegar las conclusiones y a los indicadores."
+        `
+        Si no existe consumo específico:
+ 
+        - Busca consumos típicos del tipo de equipo.
+        - Busca consumos de equipos equivalentes.
+        - Utiliza un rango representativo.
+        - Utiliza el valor promedio del rango.
+ 
+        Explica siempre la fuente y la metodología utilizada.
+        `,
+        "Ten en cuenta las observaciones de entrada del usuario para el cálculo o aproximación de consumos basados en el uso",
+        `
+          Utiliza las fuentes en este orden de prioridad:
+ 
+          1. Placa técnica visible.
+          2. Ficha técnica exacta del modelo.
+          3. Fabricante oficial.
+          4. Distribuidor oficial.
+          5. Modelo equivalente del mismo fabricante.
+          6. Equipos equivalentes encontrados en múltiples fuentes.
+          7. Promedios de mercado para la categoría.
+ 
+          Utiliza la fuente de mayor prioridad disponible.
+        `,
+        `
+          Cuando el activo no pueda identificarse completamente:
+ 
+          - Identifica primero la categoría de equipo.
+          - Determina capacidad aproximada observada.
+          - Busca equipos equivalentes de la misma categoría.
+          - Utiliza valores representativos encontrados en al menos dos fuentes.
+ 
+          Ejemplo:
+ 
+          Si se observa una nevera vertical comercial sin modelo:
+ 
+          - Busca neveras verticales comerciales similares.
+          - Busca equipos de capacidad parecida.
+          - Utiliza consumos promedio documentados.
+ 
+          Ejemplo:
+ 
+          Si se observa un horno industrial sin placa:
+ 
+          - Busca hornos industriales visualmente similares.
+          - Busca equipos del mismo tamaño y configuración.
+          - Utiliza especificaciones representativas documentadas.
+        `,
+        `
+        Cuando exista el campo cantidad:
+        - Considera que representa el número de unidades idénticas del activo.
+        - Los consumos, costos e impactos agregados deben calcularse multiplicando los valores unitarios por dicha cantidad.
+        - Debes reportar claramente el valor unitario y el valor total.
+        `
       ],
-
+ 
       imagePaths,
     });
 

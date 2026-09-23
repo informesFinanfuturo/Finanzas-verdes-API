@@ -8,9 +8,10 @@ const {
   updateConsumo,
   getConsumoById,
   uploadImagenConsumo,
-  deleteImagenConsumo,
+  deleteArchivoConsumo,
   analizarConsumo,
   deleteConsumo,
+  uploadDocumentoConsumo,
 } = require('../controllers/consumo.controller');
 
 // GET /api/roles
@@ -19,6 +20,7 @@ router.get('/:id', getConsumoById);
 // POST /api/roles
 router.post('/', requirePermissions(["Crear consumo"]), createConsumo);
 router.post('/upload', upload.single('image'), uploadImagenConsumo);
+router.post('/documento/upload', upload.single('documento'), uploadDocumentoConsumo);
 router.post('/analizar/:id', requirePermissions(["Analizar consumo"]) , analizarConsumo);
 
 
@@ -26,7 +28,7 @@ router.post('/analizar/:id', requirePermissions(["Analizar consumo"]) , analizar
 router.patch('/:id', requirePermissions(["Editar consumo"]), updateConsumo);
 
 // DELETE /api/activo
-router.delete('/image/:id_archivo', requirePermissions(["Eliminar imagen consumo"]), deleteImagenConsumo);
+router.delete('/archivo/:id_archivo', requirePermissions(["Eliminar archivo consumo"]), deleteArchivoConsumo);
 router.delete('/:id', requirePermissions(["Eliminar consumo"]), deleteConsumo);
 
 module.exports = router;

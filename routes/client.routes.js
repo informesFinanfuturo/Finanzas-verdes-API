@@ -16,10 +16,12 @@ const {
   createClientWithMipyme,
   inactiveClient,
   searchClientByNitOrDocumento,
+  getClientsByEstado,
 } = require('../controllers/client.controller');
 
 // GET /api/client
 router.get('/', requirePermissions(["Obtener clientes"]), getClients);
+router.get('/estado', requirePermissions(["Obtener clientes"]), getClientsByEstado);
 router.get('/images/:id', requirePermissions(["Obtener cliente"]), getPreviewInfoClient);
 router.get('/mipyme/:id', requirePermissions(["Obtener mipyme"]), getMipymeByUsuario);
 router.get('/activo/:id', requirePermissions(["Obtener activos"]), getActivosByUsuario);
