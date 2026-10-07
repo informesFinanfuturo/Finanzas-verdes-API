@@ -203,93 +203,251 @@ async function createCalendario(req, res) {
 
 }
 
-async function getClientsWithMyCalendarToday(req, res) {
+async function getClientsWithMyCalendarToday(
+  req,
+  res
+) {
 
-  const idUsuario = req.user?.id_usuario;
+  const idUsuario =
+    req.user?.id_usuario;
+
 
   try {
 
-    const result = await pool.query(
-      `
-      SELECT DISTINCT
+    const result =
+      await pool.query(
+        `
+        SELECT *
 
-        u.id_usuario,
-        u.nombre_usuario,
-        u.email,
-        u.documento,
-        u.telefono,
+        FROM (
 
-        r.nombre_rol,
-        r.id_rol,
+          -- ========================================
+          -- CLIENTES FV
+          -- ========================================
 
-        m.nombre_mipyme,
-        m.municipio,
-        m.tipo_empresa,
+          SELECT DISTINCT
 
-        c.id_calendario,
-        c.titulo,
-        c.fecha_hora,
-        c.descripcion,
-        c.direccion,
+            'cliente'::text
+              AS tipo_entidad,
 
-        u.estado,
-        u.created_at
+            u.id_usuario,
 
-      FROM calendario c
+            NULL::integer
+              AS id_prospecto,
 
-      INNER JOIN usuario_calendario uc_cliente
-        ON uc_cliente.id_calendario = c.id_calendario
+            u.nombre_usuario,
 
-      INNER JOIN usuario u
-        ON u.id_usuario = uc_cliente.id_usuario
+            u.email,
 
-      INNER JOIN rol r
-        ON r.id_rol = u.id_rol
+            u.documento,
 
-      LEFT JOIN mipyme_usuario mu
-        ON mu.id_usuario = u.id_usuario
+            u.telefono,
 
-      LEFT JOIN mipyme m
-        ON m.id_mipyme = mu.id_mipyme
+            r.nombre_rol,
 
-      WHERE r.nombre_rol = 'Cliente'
+            r.id_rol,
 
-        AND COALESCE(u.estado, 'activo') != 'inactivo'
+            m.nombre_mipyme,
 
-        AND DATE(c.fecha_hora) = CURRENT_DATE
+            m.municipio,
 
-        AND EXISTS (
+            m.tipo_empresa,
 
-          SELECT 1
+            c.id_calendario,
 
-          FROM usuario_calendario uc_mio
+            c.titulo,
 
-          WHERE uc_mio.id_calendario =
-                c.id_calendario
+            c.fecha_hora,
 
-            AND uc_mio.id_usuario = $1
+            c.descripcion,
 
-        )
+            c.direccion,
 
-      ORDER BY c.fecha_hora ASC
-      `,
-      [idUsuario]
-    );
+            u.estado,
+
+            u.created_at
+
+          FROM calendario c
+
+          INNER JOIN usuario_calendario uc_cliente
+            ON uc_cliente.id_calendario =
+               c.id_calendario
+
+          INNER JOIN usuario u
+            ON u.id_usuario =
+               uc_cliente.id_usuario
+
+          INNER JOIN rol r
+            ON r.id_rol =
+               u.id_rol
+
+          LEFT JOIN mipyme_usuario mu
+            ON mu.id_usuario =
+               u.id_usuario
+
+          LEFT JOIN mipyme m
+            ON m.id_mipyme =
+               mu.id_mipyme
+
+          WHERE r.nombre_rol =
+                'Cliente'
+
+            AND COALESCE(
+                  u.estado,
+                  'activo'
+                ) !=
+                'inactivo'
+
+            AND c.estado =
+                'activo'
+
+            AND DATE(
+                  c.fecha_hora
+                ) =
+                CURRENT_DATE
+
+            AND EXISTS (
+
+              SELECT 1
+
+              FROM usuario_calendario uc_mio
+
+              WHERE uc_mio.id_calendario =
+                    c.id_calendario
+
+                AND uc_mio.id_usuario =
+                    $1
+
+            )
+
+
+          UNION ALL
+
+
+          -- ========================================
+          -- PROSPECTOS
+          -- ========================================
+
+          SELECT DISTINCT
+
+            'prospecto'::text
+              AS tipo_entidad,
+
+            pc.id_usuario_convertido
+              AS id_usuario,
+
+            pc.id_prospecto,
+
+            CONCAT_WS(
+              ' ',
+              pc.nombres,
+              pc.apellidos
+            ) AS nombre_usuario,
+
+            pc.correo
+              AS email,
+
+            pc.documento,
+
+            pc.celular
+              AS telefono,
+
+            'Prospecto'::text
+              AS nombre_rol,
+
+            NULL::integer
+              AS id_rol,
+
+            NULL::text
+              AS nombre_mipyme,
+
+            pc.municipio,
+
+            NULL::text
+              AS tipo_empresa,
+
+            c.id_calendario,
+
+            c.titulo,
+
+            c.fecha_hora,
+
+            c.descripcion,
+
+            c.direccion,
+
+            pc.estado,
+
+            pc.created_at
+
+          FROM calendario c
+
+          INNER JOIN prospecto_calendario pcal
+            ON pcal.id_calendario =
+               c.id_calendario
+
+          INNER JOIN prospecto_cliente pc
+            ON pc.id_prospecto =
+               pcal.id_prospecto
+
+          WHERE c.estado =
+                'activo'
+
+            AND pc.estado IN (
+              'agendado',
+              'pospuesto',
+              'convertido'
+            )
+
+            AND DATE(
+                  c.fecha_hora
+                ) =
+                CURRENT_DATE
+
+            AND EXISTS (
+
+              SELECT 1
+
+              FROM usuario_calendario uc_mio
+
+              WHERE uc_mio.id_calendario =
+                    c.id_calendario
+
+                AND uc_mio.id_usuario =
+                    $1
+
+            )
+
+        ) agenda
+
+        ORDER BY
+          fecha_hora ASC
+        `,
+        [
+          idUsuario
+        ]
+      );
+
 
     return res.status(200).json({
-      clients: result.rows,
+
+      clients:
+        result.rows,
+
     });
 
-  } catch (err) {
+
+  } catch (error) {
 
     console.error(
-      'Error al obtener clientes agendados:',
-      err
+      'Error obteniendo agenda del día:',
+      error
     );
+
 
     return res.status(500).json({
       error:
-        'Error al obtener clientes agendados'
+        'Error al obtener la agenda del día',
     });
 
   }
@@ -570,25 +728,61 @@ async function updateCalendario(
   try {
 
     const asistentesResult =
-        await client.query(
-            `
-            SELECT u.email
+  await client.query(
+    `
+    SELECT email
 
-            FROM usuario u
+    FROM (
 
-            INNER JOIN usuario_calendario uc
-            ON uc.id_usuario = u.id_usuario
+      SELECT
+        u.email
 
-            WHERE uc.id_calendario = $1
-            AND u.email IS NOT NULL
-            `,
-            [idCalendario]
-        );
+      FROM usuario u
 
-        const attendees =
-        asistentesResult.rows
-            .map(x => x.email)
-            .filter(Boolean);
+      INNER JOIN usuario_calendario uc
+        ON uc.id_usuario =
+           u.id_usuario
+
+      WHERE uc.id_calendario =
+            $1
+
+        AND u.email IS NOT NULL
+
+
+      UNION
+
+
+      SELECT
+        pc.correo AS email
+
+      FROM prospecto_cliente pc
+
+      INNER JOIN prospecto_calendario pcal
+        ON pcal.id_prospecto =
+           pc.id_prospecto
+
+      WHERE pcal.id_calendario =
+            $1
+
+        AND pc.correo IS NOT NULL
+
+    ) asistentes
+
+    WHERE email IS NOT NULL
+    `,
+    [
+      idCalendario
+    ]
+  );
+
+
+const attendees =
+  asistentesResult.rows
+    .map(
+      item =>
+        item.email
+    )
+    .filter(Boolean);
 
     await client.query(
       'BEGIN'
@@ -717,98 +911,228 @@ async function getClientsWithMyCalendarRange(
   const idUsuario =
     req.user?.id_usuario;
 
+
   const {
     fecha_inicio,
     fecha_fin,
   } = req.body;
 
+
+  if (
+    !fecha_inicio ||
+    !fecha_fin
+  ) {
+
+    return res.status(400).json({
+      error:
+        'fecha_inicio y fecha_fin son obligatorias',
+    });
+
+  }
+
+
   try {
-
-    if (
-      !fecha_inicio ||
-      !fecha_fin
-    ) {
-
-      return res.status(400).json({
-        error:
-          'fecha_inicio y fecha_fin son obligatorias'
-      });
-
-    }
 
     const result =
       await pool.query(
         `
-        SELECT DISTINCT
+        SELECT *
 
-          u.id_usuario,
-          u.nombre_usuario,
-          u.email,
-          u.documento,
-          u.telefono,
+        FROM (
 
-          r.nombre_rol,
-          r.id_rol,
+          SELECT DISTINCT
 
-          m.nombre_mipyme,
-          m.municipio,
-          m.tipo_empresa,
+            'cliente'::text
+              AS tipo_entidad,
 
-          c.id_calendario,
-          c.titulo,
-          c.fecha_hora,
-          c.descripcion,
-          c.direccion,
+            u.id_usuario,
 
-          u.estado,
-          u.created_at
+            NULL::integer
+              AS id_prospecto,
 
-        FROM calendario c
+            u.nombre_usuario,
 
-        INNER JOIN usuario_calendario uc_cliente
-          ON uc_cliente.id_calendario =
-             c.id_calendario
+            u.email,
 
-        INNER JOIN usuario u
-          ON u.id_usuario =
-             uc_cliente.id_usuario
+            u.documento,
 
-        INNER JOIN rol r
-          ON r.id_rol =
-             u.id_rol
+            u.telefono,
 
-        LEFT JOIN mipyme_usuario mu
-          ON mu.id_usuario =
-             u.id_usuario
+            r.nombre_rol,
 
-        LEFT JOIN mipyme m
-          ON m.id_mipyme =
-             mu.id_mipyme
+            r.id_rol,
 
-        WHERE r.nombre_rol = 'Cliente'
+            m.nombre_mipyme,
 
-          AND COALESCE(
-                u.estado,
+            m.municipio,
+
+            m.tipo_empresa,
+
+            c.id_calendario,
+
+            c.titulo,
+
+            c.fecha_hora,
+
+            c.descripcion,
+
+            c.direccion,
+
+            u.estado,
+
+            u.created_at
+
+          FROM calendario c
+
+          INNER JOIN usuario_calendario uc_cliente
+            ON uc_cliente.id_calendario =
+               c.id_calendario
+
+          INNER JOIN usuario u
+            ON u.id_usuario =
+               uc_cliente.id_usuario
+
+          INNER JOIN rol r
+            ON r.id_rol =
+               u.id_rol
+
+          LEFT JOIN mipyme_usuario mu
+            ON mu.id_usuario =
+               u.id_usuario
+
+          LEFT JOIN mipyme m
+            ON m.id_mipyme =
+               mu.id_mipyme
+
+          WHERE r.nombre_rol =
+                'Cliente'
+
+            AND COALESCE(
+                  u.estado,
+                  'activo'
+                ) !=
+                'inactivo'
+
+            AND c.estado =
                 'activo'
-              ) != 'inactivo'
 
-          AND DATE(c.fecha_hora)
-              BETWEEN $2 AND $3
+            AND DATE(
+                  c.fecha_hora
+                )
+                BETWEEN $2 AND $3
 
-          AND EXISTS (
+            AND EXISTS (
 
-            SELECT 1
+              SELECT 1
 
-            FROM usuario_calendario uc_mio
+              FROM usuario_calendario uc_mio
 
-            WHERE uc_mio.id_calendario =
-                  c.id_calendario
+              WHERE uc_mio.id_calendario =
+                    c.id_calendario
 
-              AND uc_mio.id_usuario = $1
+                AND uc_mio.id_usuario =
+                    $1
 
-          )
+            )
 
-        ORDER BY c.fecha_hora ASC
+
+          UNION ALL
+
+
+          SELECT DISTINCT
+
+            'prospecto'::text
+              AS tipo_entidad,
+
+            pc.id_usuario_convertido
+              AS id_usuario,
+
+            pc.id_prospecto,
+
+            CONCAT_WS(
+              ' ',
+              pc.nombres,
+              pc.apellidos
+            ) AS nombre_usuario,
+
+            pc.correo
+              AS email,
+
+            pc.documento,
+
+            pc.celular
+              AS telefono,
+
+            'Prospecto'::text
+              AS nombre_rol,
+
+            NULL::integer
+              AS id_rol,
+
+            NULL::text
+              AS nombre_mipyme,
+
+            pc.municipio,
+
+            NULL::text
+              AS tipo_empresa,
+
+            c.id_calendario,
+
+            c.titulo,
+
+            c.fecha_hora,
+
+            c.descripcion,
+
+            c.direccion,
+
+            pc.estado,
+
+            pc.created_at
+
+          FROM calendario c
+
+          INNER JOIN prospecto_calendario pcal
+            ON pcal.id_calendario =
+               c.id_calendario
+
+          INNER JOIN prospecto_cliente pc
+            ON pc.id_prospecto =
+               pcal.id_prospecto
+
+          WHERE c.estado =
+                'activo'
+
+            AND pc.estado IN (
+              'agendado',
+              'pospuesto',
+              'convertido'
+            )
+
+            AND DATE(
+                  c.fecha_hora
+                )
+                BETWEEN $2 AND $3
+
+            AND EXISTS (
+
+              SELECT 1
+
+              FROM usuario_calendario uc_mio
+
+              WHERE uc_mio.id_calendario =
+                    c.id_calendario
+
+                AND uc_mio.id_usuario =
+                    $1
+
+            )
+
+        ) agenda
+
+        ORDER BY
+          fecha_hora ASC
         `,
         [
           idUsuario,
@@ -817,7 +1141,6 @@ async function getClientsWithMyCalendarRange(
         ]
       );
 
-    console.log(result.rows)
 
     return res.status(200).json({
 
@@ -833,16 +1156,18 @@ async function getClientsWithMyCalendarRange(
 
     });
 
-  } catch (err) {
+
+  } catch (error) {
 
     console.error(
-      'Error al obtener clientes por rango:',
-      err
+      'Error obteniendo calendario:',
+      error
     );
+
 
     return res.status(500).json({
       error:
-        'Error al obtener clientes por rango'
+        'Error al obtener el calendario',
     });
 
   }
@@ -850,9 +1175,17 @@ async function getClientsWithMyCalendarRange(
 }
 
 module.exports = {
-    createCalendario,
-    getClientsWithMyCalendarToday,
-    cancelarCalendario,
-    updateCalendario,
-    getClientsWithMyCalendarRange,
-}
+
+  createCalendario,
+
+  getClientsWithMyCalendarToday,
+
+  cancelarCalendario,
+
+  updateCalendario,
+
+  getClientsWithMyCalendarRange,
+
+  crearEventoTeams,
+
+};

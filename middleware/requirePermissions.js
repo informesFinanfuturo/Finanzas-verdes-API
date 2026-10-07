@@ -1,58 +1,133 @@
-const pool = require('../db'); // ajusta el path a tu pool
+const pool =
+  require('../db');
 
-function requirePermissions(requiredPermissions = []) {
-  return async (req, res, next) => {
+function requirePermissions(
+  requiredPermissions = []
+) {
+  return async (
+    req,
+    res,
+    next
+  ) => {
     try {
-      // 🔐 auth middleware ya debió poner esto
-      const { id_rol } = req.user;
+      const idRol =
+        Number(
+          req.user?.id_rol
+        );
 
-      if (!id_rol) {
+      if (
+        !Number.isInteger(idRol) ||
+        idRol <= 0
+      ) {
         return res.status(401).json({
-          error: 'Usuario no autenticado',
+          error:
+            'Usuario no autenticado',
+          code:
+            'UNAUTHENTICATED_USER',
         });
       }
 
-      if (requiredPermissions.length === 0) {
-        return next(); // nada que validar
+      if (
+        requiredPermissions.length ===
+        0
+      ) {
+        return next();
       }
 
-      // 1️⃣ Obtener permisos del rol desde BD
-      const result = await pool.query(
-        `
-        SELECT p.nombre
-        FROM permiso p
-        JOIN permiso_rol pr ON pr.id_permiso = p.id_permiso
-        WHERE pr.id_rol = $1
-        `,
-        [id_rol]
-      );
+      const normalizedRequired =
+        requiredPermissions.map(
+          permission =>
+            String(permission)
+              .trim()
+              .toLowerCase()
+        );
 
-      const userPermissions = result.rows.map(
-        row => row.nombre
-      );
+      const result =
+        await pool.query(
+          `
+          SELECT
+            LOWER(
+              TRIM(p.nombre)
+            ) AS nombre
 
-      // 2️⃣ Verificar que tenga TODOS los permisos requeridos
-      const hasAllPermissions = requiredPermissions.every(
-        perm => userPermissions.includes(perm)
-      );
+          FROM permiso p
 
-      if (!hasAllPermissions) {
+          INNER JOIN permiso_rol pr
+            ON pr.id_permiso =
+              p.id_permiso
+
+          INNER JOIN rol r
+            ON r.id_rol =
+              pr.id_rol
+
+          WHERE
+            pr.id_rol = $1
+
+            AND COALESCE(
+              p.estado,
+              'activo'
+            ) = 'activo'
+
+            AND COALESCE(
+              r.estado,
+              'activo'
+            ) = 'activo'
+          `,
+          [
+            idRol
+          ]
+        );
+
+      const userPermissions =
+        new Set(
+          result.rows.map(
+            row => row.nombre
+          )
+        );
+
+      const missingPermissions =
+        normalizedRequired.filter(
+          permission =>
+            !userPermissions.has(
+              permission
+            )
+        );
+
+      if (
+        missingPermissions.length > 0
+      ) {
         return res.status(403).json({
-          error: 'No tiene permisos suficientes',
-          required: requiredPermissions,
+          error:
+            'No tiene permisos suficientes para realizar esta operación',
+
+          code:
+            'INSUFFICIENT_PERMISSIONS',
+
+          required:
+            requiredPermissions,
+
+          missing:
+            missingPermissions,
         });
       }
 
-      // ✅ Autorizado
-      next();
+      return next();
 
     } catch (err) {
-      console.error('Error validando permisos:', err);
+      console.error(
+        'Error validando permisos:',
+        err
+      );
+
       return res.status(500).json({
-        error: 'Error interno validando permisos',
+        error:
+          'Error interno validando permisos',
+        code:
+          'PERMISSIONS_INTERNAL_ERROR',
       });
     }
   };
 }
 
-module.exports = requirePermissions;
+module.exports =
+  requirePermissions;

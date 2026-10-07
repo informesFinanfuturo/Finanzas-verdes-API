@@ -1,16 +1,17 @@
 // index.js
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const auth = require('./middleware/auth');
 const path = require('path');
-require('dotenv').config();
 const rolesRoutes = require('./routes/rol.routes');
 const userRoutes = require('./routes/user.routes');
 const servicesRoutes = require('./routes/services.routes');
 const permissionRoutes = require('./routes/permission.routes');
 const loginRoutes = require('./routes/login.routes');
 const clientRoutes = require('./routes/client.routes');
-const asesorRoutes = require('./routes/asesor.routes');
+const asesorRoutes = require('./routes/asesor.routes'); 
 const activoRoutes = require('./routes/activo.routes');
 const consumoRoutes = require('./routes/consumo.routes');
 const proveedorRoutes = require('./routes/proveedor.routes');
@@ -18,6 +19,7 @@ const catalogoRoutes = require('./routes/catalogo.routes');
 const diagnosticoRoutes = require('./routes/diagnostico.routes');
 const planTrabajoRoutes = require('./routes/plan.trabajo.routes');
 const calendarioRoutes = require('./routes/calendario.routes');
+const prospectoRoutes = require('./routes/prospecto.routes');
 
 const app = express();
 app.use(cors());
@@ -43,6 +45,7 @@ app.use('/api/catalogo', auth, catalogoRoutes);
 app.use('/api/diagnostico', auth, diagnosticoRoutes);
 app.use('/api/plantrabajo', auth, planTrabajoRoutes);
 app.use('/api/calendario', auth, calendarioRoutes);
+app.use('/api/prospecto', auth, prospectoRoutes);
 
 app.use(
   '/uploads',

@@ -1,5 +1,9 @@
 const cron = require('node-cron');
-const { syncTodosLosCatalogos } = require('../controllers/catalogo.controller');
+const {
+  iniciarSincronizacionAutomatica,
+} = require(
+  '../controllers/catalogo.controller'
+);
 
 function iniciarScheduler() {
 
@@ -10,7 +14,16 @@ function iniciarScheduler() {
 
       console.log('Ejecutando tarea automática');
 
-      await syncTodosLosCatalogos();
+      const result = await iniciarSincronizacionAutomatica();
+
+      console.log(
+        'Resultado del proceso automático:',
+        JSON.stringify(
+          result,
+          null,
+          2,
+        ),
+      );
 
     } catch (err) {
 

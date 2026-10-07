@@ -1,23 +1,87 @@
-// routes/roles.routes.js
-const express = require('express');
-const router = express.Router();
+const express =
+  require('express');
+
+const router =
+  express.Router();
+
+const requirePermissions =
+  require(
+    '../middleware/requirePermissions'
+  );
+
 const {
   createRole,
   getRols,
   updateRol,
   getRolById,
   togglePermisoRol,
-} = require('../controllers/rol.controller');
+  replaceRolePermissions,
+} = require(
+  '../controllers/rol.controller'
+);
 
-// GET /api/roles
-router.get('/', getRols);
-router.get('/:id', getRolById);
+// =====================================
+// CONSULTAS
+// =====================================
 
-// POST /api/roles
-router.post('/', createRole);
+router.get(
+  '/',
+  requirePermissions([
+    'Obtener roles'
+  ]),
+  getRols
+);
 
-// PATCH /api/roles
-router.patch('/permission', togglePermisoRol);
-router.patch('/:id', updateRol);
+router.get(
+  '/:id',
+  requirePermissions([
+    'Obtener roles'
+  ]),
+  getRolById
+);
+
+// =====================================
+// CREACIÓN
+// =====================================
+
+router.post(
+  '/',
+  requirePermissions([
+    'Crear rol'
+  ]),
+  createRole
+);
+
+// =====================================
+// ASIGNACIÓN DE PERMISOS
+// =====================================
+
+router.patch(
+  '/permission',
+  requirePermissions([
+    'Asignar permisos rol'
+  ]),
+  togglePermisoRol
+);
+
+// =====================================
+// EDICIÓN
+// =====================================
+
+router.put(
+  '/:id/permissions',
+  requirePermissions([
+    'Asignar permisos rol'
+  ]),
+  replaceRolePermissions
+);
+
+router.patch(
+  '/:id',
+  requirePermissions([
+    'Editar rol'
+  ]),
+  updateRol
+);
 
 module.exports = router;

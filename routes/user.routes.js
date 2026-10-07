@@ -1,26 +1,115 @@
-// routes/user.routes.js
-const express = require('express');
-const router = express.Router();
-const requirePermissions = require('../middleware/requirePermissions');
+const express =
+  require('express');
+
+const router =
+  express.Router();
+
+const requirePermissions =
+  require(
+    '../middleware/requirePermissions'
+  );
+
 const {
   getUsers,
   createUser,
-  updateUser, 
-  changeUserPassword,
+  updateUser,
+  resetUserPassword,
+  changeOwnPassword,
+  changeUserAccessStatus,
   getUsersByRol,
   getUserFullDetail,
-} = require('../controllers/user.controller');
+  getUserAudit,
+} = require(
+  '../controllers/user.controller'
+);
 
-// GET /api/user
-router.get('/', requirePermissions(["Obtener usuarios"]), getUsers);
-router.get('/:id', requirePermissions(["Obtener usuario"]), getUserFullDetail);
-router.get('/rol/:id', requirePermissions(["Obtener usuarios"]), getUsersByRol);
+// =====================================
+// CONTRASEÑA DEL USUARIO AUTENTICADO
+// =====================================
 
-// POST /api/user
-router.post('/', requirePermissions(["Crear usuario"]), createUser);
+router.put(
+  '/me/password',
+  changeOwnPassword
+);
 
-// PUT /api/user
-router.patch('/:id', requirePermissions(["Editar usuario"]), updateUser);
-router.put('/password/:id', changeUserPassword);
+// =====================================
+// CONSULTAS
+// =====================================
+
+router.get(
+  '/',
+  requirePermissions([
+    'Obtener usuarios'
+  ]),
+  getUsers
+);
+
+router.get(
+  '/rol/:id',
+  requirePermissions([
+    'Obtener usuarios'
+  ]),
+  getUsersByRol
+);
+
+router.get(
+  '/:id/audit',
+  requirePermissions([
+    'Consultar auditoría usuarios',
+  ]),
+  getUserAudit
+);
+
+router.get(
+  '/:id',
+  requirePermissions([
+    'Obtener usuario'
+  ]),
+  getUserFullDetail
+);
+
+// =====================================
+// CREACIÓN
+// =====================================
+
+router.post(
+  '/',
+  requirePermissions([
+    'Crear usuario'
+  ]),
+  createUser
+);
+
+// =====================================
+// SEGURIDAD
+// =====================================
+
+router.post(
+  '/:id/reset-password',
+  requirePermissions([
+    'Restablecer contraseña usuario'
+  ]),
+  resetUserPassword
+);
+
+router.patch(
+  '/:id/status',
+  requirePermissions([
+    'Cambiar estado usuario'
+  ]),
+  changeUserAccessStatus
+);
+
+// =====================================
+// EDICIÓN GENERAL
+// =====================================
+
+router.patch(
+  '/:id',
+  requirePermissions([
+    'Editar usuario'
+  ]),
+  updateUser
+);
 
 module.exports = router;

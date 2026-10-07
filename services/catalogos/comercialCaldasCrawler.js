@@ -795,14 +795,19 @@ async function procesarFichasPorLotesAPowerAutomate(
   productos,
   batchSize = 2
 ) {
-  if (!Array.isArray(productos)) {
+
+  if (
+    !Array.isArray(productos)
+  ) {
     throw new TypeError(
       'productos debe ser un arreglo'
     );
   }
 
   if (
-    !Number.isInteger(batchSize) ||
+    !Number.isInteger(
+      batchSize
+    ) ||
     batchSize <= 0
   ) {
     throw new TypeError(
@@ -810,8 +815,10 @@ async function procesarFichasPorLotesAPowerAutomate(
     );
   }
 
+
   const resultadosPorUrl =
     new Map();
+
 
   const totalLotes =
     Math.ceil(
@@ -819,29 +826,36 @@ async function procesarFichasPorLotesAPowerAutomate(
       batchSize
     );
 
+
   console.log(
     `Power Automate procesará ${productos.length} productos en ${totalLotes} lotes`
   );
+
 
   for (
     let start = 0;
     start < productos.length;
     start += batchSize
   ) {
+
     const lote =
       productos.slice(
         start,
         start + batchSize
       );
 
+
     const numeroLote =
       Math.floor(
-        start / batchSize
+        start /
+        batchSize
       ) + 1;
+
 
     console.log(
       `\n===== Lote ${numeroLote}/${totalLotes} =====`
     );
+
 
     console.log(
       'Productos del lote:',
@@ -851,56 +865,103 @@ async function procesarFichasPorLotesAPowerAutomate(
       )
     );
 
-    const resultadosLote =
-      await enviarFichasAPowerAutomate(
-        lote
-      );
 
-    console.log(
-      `Resultados del lote ${numeroLote}:`,
-      resultadosLote.length
-    );
+    try {
 
-    /*
-     * Sin una referencia devuelta por
-     * Power Automate, la única forma segura
-     * de relacionar los datos es que cada lote
-     * devuelva exactamente la misma cantidad.
-     */
-    if (
-      resultadosLote.length !==
-      lote.length
-    ) {
-      throw new Error(
-        `El lote ${numeroLote} envió ${lote.length} fichas, ` +
-        `pero Power Automate devolvió ${resultadosLote.length} resultados`
-      );
-    }
-
-    lote.forEach(
-      (producto, index) => {
-        resultadosPorUrl.set(
-          producto.url,
-          resultadosLote[index]
+      /*
+       * Cada lote se procesa de forma
+       * independiente.
+       */
+      const resultadosLote =
+        await enviarFichasAPowerAutomate(
+          lote
         );
-      }
-    );
 
-    /*
-     * Pausa corta para no iniciar inmediatamente
-     * otra ejecución pesada del flujo.
-     */
-    if (
-      numeroLote < totalLotes
-    ) {
-      await delay(2000);
+
+      console.log(
+        `Resultados del lote ${numeroLote}:`,
+        resultadosLote.length
+      );
+
+
+      /*
+       * Si el lote devuelve una cantidad
+       * incorrecta se considera fallido,
+       * pero NO detiene los siguientes.
+       */
+      if (
+        resultadosLote.length !==
+        lote.length
+      ) {
+
+        throw new Error(
+          `El lote ${numeroLote} envió ${lote.length} fichas, ` +
+          `pero Power Automate devolvió ${resultadosLote.length} resultados`
+        );
+
+      }
+
+
+      lote.forEach(
+        (
+          producto,
+          index,
+        ) => {
+
+          resultadosPorUrl.set(
+            producto.url,
+            resultadosLote[
+              index
+            ]
+          );
+
+        }
+      );
+
+
+      console.log(
+        `Lote ${numeroLote}/${totalLotes} procesado correctamente`
+      );
+
+    } catch (error) {
+
+      /*
+       * CLAVE:
+       * registramos el error y continuamos
+       * con el siguiente lote.
+       */
+      console.error(
+        `Error procesando lote ${numeroLote}/${totalLotes}:`,
+        error
+      );
+
+
+      console.warn(
+        `El lote ${numeroLote} fue omitido. Se continuará con el siguiente lote.`
+      );
+
     }
+
+
+    if (
+      numeroLote <
+      totalLotes
+    ) {
+
+      await delay(
+        2000
+      );
+
+    }
+
   }
+
 
   console.log(
     'Total de productos relacionados con IA:',
     resultadosPorUrl.size
   );
+
 
   return resultadosPorUrl;
 }

@@ -235,25 +235,44 @@ async function extractCatalogLaPipa() {
 
   const allProducts = [];
 
-  for (const categoria of categorias) {
+  for (
+    const categoria
+    of categorias
+  ) {
 
     console.log(
       `\n===== ${categoria.nombre} =====`
     );
 
-    const products =
-      await extractCategory(
-        categoria.url,
-        categoria.nombre
+    try {
+
+      const products =
+        await extractCategory(
+          categoria.url,
+          categoria.nombre
+        );
+
+      console.log(
+        `Encontrados: ${products.length}`
       );
 
-    console.log(
-      `Encontrados: ${products.length}`
-    );
+      allProducts.push(
+        ...products
+      );
 
-    allProducts.push(
-      ...products
-    );
+    } catch (error) {
+
+      /*
+       * IMPORTANTE:
+       * la categoría falla, pero el crawler
+       * continúa con la siguiente.
+       */
+      console.error(
+        `No fue posible procesar la categoría ${categoria.nombre}:`,
+        error
+      );
+
+    }
 
   }
 

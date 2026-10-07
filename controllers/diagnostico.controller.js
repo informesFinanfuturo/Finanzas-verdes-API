@@ -342,6 +342,11 @@ async function generarDiagnosticoConIA(contexto) {
             },
             id_activo: null,
             prioridad : "Alta | Media | Baja",
+             producto_recomendado: {
+              id_item: 1,
+              id_proveedor: 1,
+              motivo_seleccion: "Explicación breve de por qué este producto es la mejor alternativa para el activo"
+            },
             metricas : {
               consumo_energia_actual_mes : 200,
               consumo_energia_proyectado_mes : 150,
@@ -870,6 +875,24 @@ El propósito de evidencia_catalogo es documentar la evidencia utilizada para ju
 - Selección final de alternativa para la salida
  
 Cada activo incluido en la respuesta estructurada debe estar asociado a una única alternativa del catálogo.
+
+Para cada activo incluido en metricas.activos debes devolver obligatoriamente:
+
+- producto_recomendado.id_item,
+- producto_recomendado.id_proveedor,
+- producto_recomendado.motivo_seleccion.
+
+El id_item debe corresponder exactamente a un producto existente dentro del catálogo suministrado.
+
+El id_proveedor debe coincidir exactamente con el id_proveedor del producto seleccionado.
+
+No escribas el nombre del producto como sustituto del id_item.
+
+No devuelvas un producto que no se encuentre en el catálogo.
+
+No devuelvas null en id_item o id_proveedor cuando incluyas el activo dentro de metricas.activos.
+
+Las métricas proyectadas y la inversión de cada activo deben corresponder exclusivamente al producto identificado en producto_recomendado.
  
 Si durante la evaluación se identifican múltiples alternativas funcionalmente compatibles y la información disponible no permite diferenciarlas objetivamente mediante los criterios definidos en el PASO 6:
  
@@ -905,8 +928,19 @@ Evita tecnicismos innecesarios cuando no aporten valor al diagnóstico.
  
 - REFERENCIAS E IDENTIFICADORES
  
-No muestres IDs internos utilizados para identificar activos, productos o elementos del catálogo.
-Utiliza nombres descriptivos y comprensibles para el usuario final.
+No muestres IDs internos dentro de los textos narrativos destinados al usuario final.
+
+Sin embargo, debes conservar y devolver los identificadores internos en los campos estructurados definidos para ello:
+
+- id_activo,
+- producto_recomendado.id_item,
+- producto_recomendado.id_proveedor.
+
+Estos identificadores deben copiarse exactamente de la información suministrada.
+
+No inventes, transformes, intercambies ni deduzcas identificadores.
+
+Los IDs estructurados son necesarios para validar técnicamente la recomendación, pero no deben mencionarse dentro de problema, beneficios, resúmenes, detalles ni motivo_seleccion.
  
 - VALORES ECONÓMICOS
  
@@ -931,22 +965,296 @@ Cuando una métrica no pueda determinarse razonablemente con la evidencia dispon
     ],
     imagePaths: [],
   });
+  
+  /*
+  * Validamos y enriquecemos cada
+  * recomendación generada por Gemini.
+  */
+  const activosDiagnostico = response.metricas?.activos ?? [];
 
-// Enriquecer activos
-  const activosDiagnostico =
-    response.metricas?.activos ?? [];
+  if (!Array.isArray(activosDiagnostico)) {
+    throw new Error(
+      'La IA devolvió una estructura inválida para metricas.activos'
+    );
+  }
 
-  for (const activoDiag of activosDiagnostico) {
+  for (
+    const activoDiag
+    of activosDiagnostico
+  ) {
 
-    const activoOriginal =
-      contexto.activos.find(a =>
-        normalizeText(a.nombre) ===
-        normalizeText(activoDiag.nombre_activo)
+    /*
+    * Primero intentamos relacionar por ID.
+    * Si Gemini no lo conservó, usamos el
+    * nombre como mecanismo secundario.
+    */
+    const idActivoIA =
+      Number(
+        activoDiag?.id_activo
       );
 
+    const activoOriginal =
+      contexto.activos.find(
+        activo =>
+          Number.isInteger(
+            idActivoIA
+          ) &&
+          Number(
+            activo.id_activo
+          ) ===
+          idActivoIA
+      ) ??
+      contexto.activos.find(
+        activo =>
+          normalizeText(
+            activo.nombre
+          ) ===
+          normalizeText(
+            activoDiag
+              ?.nombre_activo
+          )
+      );
+
+    if (!activoOriginal) {
+      throw new Error(
+        `La IA recomendó un activo que no pudo relacionarse con los activos originales: ${
+          activoDiag
+            ?.nombre_activo ??
+          'sin nombre'
+        }`
+      );
+    }
+
     activoDiag.id_activo =
-      activoOriginal?.id_activo ?? null;
+      Number(
+        activoOriginal
+          .id_activo
+      );
+
+    activoDiag.nombre_activo =
+      activoOriginal.nombre;
+
+    const recomendacionIA =
+      activoDiag
+        ?.producto_recomendado;
+
+    const idItem =
+      Number(
+        recomendacionIA
+          ?.id_item
+      );
+
+    const idProveedor =
+      Number(
+        recomendacionIA
+          ?.id_proveedor
+      );
+
+    if (
+      !Number.isInteger(
+        idItem
+      ) ||
+      !Number.isInteger(
+        idProveedor
+      )
+    ) {
+      throw new Error(
+        `La IA no devolvió un producto válido para el activo ${activoOriginal.nombre}`
+      );
+    }
+
+    /*
+    * Buscamos el producto únicamente
+    * dentro del catálogo oficial que fue
+    * enviado a Gemini.
+    */
+    const productoCatalogo =
+      contexto.catalogo.find(
+        producto =>
+          Number(
+            producto.id_item
+          ) ===
+          idItem
+      );
+
+    if (!productoCatalogo) {
+      throw new Error(
+        `La IA recomendó el producto ${idItem}, pero no existe en el catálogo suministrado`
+      );
+    }
+
+    if (
+      Number(
+        productoCatalogo
+          .id_proveedor
+      ) !==
+      idProveedor
+    ) {
+      throw new Error(
+        `El proveedor devuelto por la IA no corresponde al producto ${idItem}`
+      );
+    }
+
+    if (
+      productoCatalogo
+        .disponible !== true
+    ) {
+      throw new Error(
+        `La IA recomendó un producto que no está disponible: ${idItem}`
+      );
+    }
+
+    /*
+    * Aunque el catálogo enviado ya fue
+    * filtrado, validamos nuevamente la
+    * categoría para evitar asociaciones
+    * incorrectas.
+    */
+    if (
+      normalizeText(
+        productoCatalogo
+          .tipo_item
+      ) !==
+      normalizeText(
+        activoOriginal.tipo
+      )
+    ) {
+      throw new Error(
+        `El producto ${idItem} no es compatible con el tipo del activo ${activoOriginal.nombre}`
+      );
+    }
+
+    const cantidad =
+      Number(
+        activoOriginal.cantidad ??
+        1
+      ) || 1;
+
+    const precioUnitario =
+      Number(
+        productoCatalogo
+          .precio_base
+      );
+
+    if (
+      !Number.isFinite(
+        precioUnitario
+      ) ||
+      precioUnitario < 0
+    ) {
+      throw new Error(
+        `El producto ${idItem} no tiene un precio válido`
+      );
+    }
+
+    /*
+    * Reemplazamos la información generada
+    * por Gemini por la información oficial
+    * del catálogo.
+    */
+    activoDiag
+      .producto_recomendado = {
+
+      id_item:
+        Number(
+          productoCatalogo
+            .id_item
+        ),
+
+      id_proveedor:
+        Number(
+          productoCatalogo
+            .id_proveedor
+        ),
+
+      nombre:
+        productoCatalogo
+          .nombre,
+
+      tipo_item:
+        productoCatalogo
+          .tipo_item,
+
+      cantidad_activo: cantidad,
+
+      descripcion:
+        productoCatalogo
+          .descripcion,
+
+      especificaciones:
+        productoCatalogo
+          .especificaciones,
+
+      precio_base:
+        precioUnitario,
+
+      url_origen:
+        productoCatalogo
+          .url_origen,
+
+      proveedor: {
+        id_proveedor:
+          Number(
+            productoCatalogo
+              .id_proveedor
+          ),
+
+        nombre:
+          productoCatalogo
+            .nombre_proveedor,
+
+        nit:
+          productoCatalogo
+            .nit_proveedor,
+
+        calificacion:
+          productoCatalogo
+            .calificacion_proveedor,
+      },
+
+      motivo_seleccion:
+        recomendacionIA
+          ?.motivo_seleccion ??
+        '',
+
+      fuente:
+        'ia',
+
+      seleccionado_at:
+        new Date()
+          .toISOString(),
+    };
+
+    activoDiag.metricas = {
+      ...(
+        activoDiag.metricas ||
+        {}
+      ),
+
+      /*
+      * La inversión siempre utiliza el
+      * precio oficial del catálogo.
+      */
+      inversion_total_requerida:
+        precioUnitario *
+        cantidad,
+    };
   }
+
+  response.metricas = {
+    ...(
+      response.metricas ||
+      {}
+    ),
+
+    evidencia_catalogo:
+      Array.isArray(
+        response.evidencia_catalogo
+      )
+        ? response
+            .evidencia_catalogo
+        : [],
+  };
 
   return {
     titulo: response.titulo,
@@ -967,6 +1275,1100 @@ function normalizeText(value) {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
+}
+
+const FACTOR_CO2_KG_POR_KWH = 0.22;
+const MESES_PROYECCION_ROI = 60;
+
+function numeroFinitoONull(
+  value
+) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value)
+      ? value
+      : null;
+  }
+
+  const textoOriginal =
+    value
+      .toString()
+      .trim();
+
+  if (!textoOriginal) {
+    return null;
+  }
+
+  /*
+   * Extrae únicamente el primer bloque
+   * numérico de expresiones como:
+   *
+   * 24.5 Kilovatio-hora/Mes
+   * 320 kWh/año
+   * 1.999.900 COP
+   * 18,5 litros por ciclo
+   */
+  const coincidencia =
+    textoOriginal.match(
+      /-?\d[\d.,]*/
+    );
+
+  if (!coincidencia) {
+    return null;
+  }
+
+  let texto =
+    coincidencia[0];
+
+  if (
+    texto.includes('.') &&
+    texto.includes(',')
+  ) {
+    const ultimaComa =
+      texto.lastIndexOf(',');
+
+    const ultimoPunto =
+      texto.lastIndexOf('.');
+
+    if (ultimaComa > ultimoPunto) {
+      texto = texto
+        .replace(/\./g, '')
+        .replace(',', '.');
+    } else {
+      texto =
+        texto.replace(/,/g, '');
+    }
+  } else if (
+    /^\d{1,3}(\.\d{3})+$/.test(
+      texto
+    )
+  ) {
+    texto =
+      texto.replace(/\./g, '');
+  } else if (
+    /^\d{1,3}(,\d{3})+$/.test(
+      texto
+    )
+  ) {
+    texto =
+      texto.replace(/,/g, '');
+  } else {
+    texto =
+      texto.replace(',', '.');
+  }
+
+  const resultado =
+    Number(texto);
+
+  return Number.isFinite(
+    resultado
+  )
+    ? resultado
+    : null;
+}
+
+function normalizarClaveMetrica(value) {
+  return normalizeText(value)
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function aplanarEspecificaciones(
+  value,
+  prefix = '',
+  output = {}
+) {
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return output;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      aplanarEspecificaciones(
+        item,
+        `${prefix}_${index}`,
+        output
+      );
+    });
+
+    return output;
+  }
+
+  if (
+    typeof value === 'object'
+  ) {
+    for (
+      const [key, child]
+      of Object.entries(value)
+    ) {
+      const normalizedKey =
+        normalizarClaveMetrica(key);
+
+      const nextPrefix =
+        prefix
+          ? `${prefix}_${normalizedKey}`
+          : normalizedKey;
+
+      aplanarEspecificaciones(
+        child,
+        nextPrefix,
+        output
+      );
+    }
+
+    return output;
+  }
+
+  if (prefix) {
+    output[
+      normalizarClaveMetrica(prefix)
+    ] = value;
+  }
+
+  return output;
+}
+
+function buscarEspecificacion(
+  especificaciones,
+  aliases
+) {
+  const specs =
+    aplanarEspecificaciones(
+      especificaciones || {}
+    );
+
+  const aliasesNormalizados =
+    aliases.map(
+      normalizarClaveMetrica
+    );
+
+  /*
+   * Primero buscamos coincidencia exacta.
+   */
+  for (
+    const alias
+    of aliasesNormalizados
+  ) {
+    if (
+      Object.prototype.hasOwnProperty.call(
+        specs,
+        alias
+      )
+    ) {
+      return {
+        key: alias,
+        value: specs[alias],
+      };
+    }
+  }
+
+  /*
+   * Después permitimos claves como:
+   * datos_consumo_energia_mensual_kwh
+   */
+  for (
+    const [key, value]
+    of Object.entries(specs)
+  ) {
+    const coincide =
+      aliasesNormalizados.some(
+        alias =>
+          key === alias ||
+          key.endsWith(`_${alias}`)
+      );
+
+    if (coincide) {
+      return {
+        key,
+        value,
+      };
+    }
+  }
+
+  return null;
+}
+
+function obtenerDatoOperacion(
+  datos,
+  aliases
+) {
+  const resultado =
+    buscarEspecificacion(
+      datos,
+      aliases
+    );
+
+  return numeroFinitoONull(
+    resultado?.value
+  );
+}
+
+function obtenerConsumoEnergiaMensual({
+  especificaciones,
+  datosActivo,
+  consumoIA = null,
+  permitirFallbackIA = false,
+}) {
+  /*
+   * 1. Consumo mensual explícito.
+   */
+  const mensual =
+    buscarEspecificacion(
+      especificaciones,
+      [
+        'consumo_energia_mensual_kwh',
+        'consumo_mensual_kwh',
+        'consumo_energetico_mensual_kwh',
+        'energia_mensual_kwh',
+        'consumo_minimo_energetico',
+        'consumo_mensual_energetico',
+        'consumo_energia_mes',
+        'consumo_energetico',
+        'kwh_mes',
+      ]
+    );
+
+  const mensualValue =
+    numeroFinitoONull(
+      mensual?.value
+    );
+
+  if (mensualValue !== null) {
+    return {
+      value: mensualValue,
+      fuente:
+        `catalogo:${mensual.key}`,
+    };
+  }
+
+  /*
+   * 2. Consumo anual explícito.
+   */
+  const anual =
+    buscarEspecificacion(
+      especificaciones,
+      [
+        'consumo_energia_anual_kwh',
+        'consumo_anual_kwh',
+        'consumo_energetico_anual_kwh',
+        'energia_anual_kwh',
+        'kwh_ano',
+      ]
+    );
+
+  const anualValue =
+    numeroFinitoONull(
+      anual?.value
+    );
+
+  if (anualValue !== null) {
+    return {
+      value:
+        anualValue / 12,
+      fuente:
+        `catalogo:${anual.key}`,
+    };
+  }
+
+  /*
+   * 3. Potencia × patrón real de uso.
+   */
+  const potencia =
+    buscarEspecificacion(
+      especificaciones,
+      [
+        'potencia_w',
+        'potencia_nominal_w',
+        'potencia_electrica_w',
+        'potencia',
+      ]
+    );
+
+  let potenciaW =
+    numeroFinitoONull(
+      potencia?.value
+    );
+
+  if (
+    potenciaW !== null &&
+    potencia?.value
+      ?.toString()
+      .toLowerCase()
+      .includes('kw') &&
+    !potencia.value
+      .toString()
+      .toLowerCase()
+      .includes('kwh')
+  ) {
+    potenciaW *= 1000;
+  }
+
+  const horasDia =
+    obtenerDatoOperacion(
+      datosActivo,
+      [
+        'horas_uso_dia',
+        'horas_uso_diario',
+        'horas_dia',
+      ]
+    );
+
+  const diasMes =
+    obtenerDatoOperacion(
+      datosActivo,
+      [
+        'dias_uso_mes',
+        'dias_mes',
+      ]
+    );
+
+  if (
+    potenciaW !== null &&
+    horasDia !== null &&
+    diasMes !== null
+  ) {
+    return {
+      value:
+        (
+          potenciaW *
+          horasDia *
+          diasMes
+        ) / 1000,
+
+      fuente:
+        'calculado:potencia_y_patron_uso',
+    };
+  }
+
+  /*
+   * El consumo calculado por IA solamente
+   * puede conservarse cuando la alternativa
+   * sigue siendo el producto recomendado
+   * originalmente por la IA.
+   */
+  const consumoIAValue =
+    numeroFinitoONull(
+      consumoIA
+    );
+
+  if (
+    permitirFallbackIA &&
+    consumoIAValue !== null
+  ) {
+    return {
+      value:
+        consumoIAValue,
+
+      fuente:
+        'diagnostico_ia',
+    };
+  }
+
+  return {
+    value: null,
+    fuente: null,
+  };
+}
+
+function obtenerConsumoAguaMensual({
+  especificaciones,
+  datosActivo,
+  consumoIA = null,
+  permitirFallbackIA = false,
+}) {
+  /*
+   * 1. Consumo mensual en m³.
+   */
+  const mensual =
+    buscarEspecificacion(
+      especificaciones,
+      [
+        'consumo_agua_mensual_m3',
+        'consumo_mensual_agua_m3',
+        'agua_mensual_m3',
+        'm3_mes',
+      ]
+    );
+
+  const mensualValue =
+    numeroFinitoONull(
+      mensual?.value
+    );
+
+  if (mensualValue !== null) {
+    return {
+      value: mensualValue,
+      fuente:
+        `catalogo:${mensual.key}`,
+    };
+  }
+
+  /*
+   * 2. Litros por ciclo.
+   */
+  const litrosCiclo =
+    buscarEspecificacion(
+      especificaciones,
+      [
+        'consumo_agua_ciclo_l',
+        'litros_por_ciclo',
+        'consumo_por_ciclo_l',
+        'agua_por_ciclo_l',
+      ]
+    );
+
+  const litrosCicloValue =
+    numeroFinitoONull(
+      litrosCiclo?.value
+    );
+
+  const ciclosMes =
+    obtenerDatoOperacion(
+      datosActivo,
+      [
+        'ciclos_mes',
+        'cantidad_ciclos_mes',
+        'usos_mes',
+      ]
+    );
+
+  if (
+    litrosCicloValue !== null &&
+    ciclosMes !== null
+  ) {
+    return {
+      value:
+        (
+          litrosCicloValue *
+          ciclosMes
+        ) / 1000,
+
+      fuente:
+        'calculado:litros_por_ciclo',
+    };
+  }
+
+  /*
+   * 3. Litros por minuto.
+   */
+  const litrosMinuto =
+    buscarEspecificacion(
+      especificaciones,
+      [
+        'consumo_agua_l_min',
+        'litros_por_minuto',
+        'caudal_l_min',
+        'caudal',
+      ]
+    );
+
+  const litrosMinutoValue =
+    numeroFinitoONull(
+      litrosMinuto?.value
+    );
+
+  const minutosDia =
+    obtenerDatoOperacion(
+      datosActivo,
+      [
+        'minutos_uso_dia',
+        'minutos_dia',
+      ]
+    );
+
+  const diasMes =
+    obtenerDatoOperacion(
+      datosActivo,
+      [
+        'dias_uso_mes',
+        'dias_mes',
+      ]
+    );
+
+  if (
+    litrosMinutoValue !== null &&
+    minutosDia !== null &&
+    diasMes !== null
+  ) {
+    return {
+      value:
+        (
+          litrosMinutoValue *
+          minutosDia *
+          diasMes
+        ) / 1000,
+
+      fuente:
+        'calculado:caudal_y_patron_uso',
+    };
+  }
+
+  const consumoIAValue =
+    numeroFinitoONull(
+      consumoIA
+    );
+
+  if (
+    permitirFallbackIA &&
+    consumoIAValue !== null
+  ) {
+    return {
+      value:
+        consumoIAValue,
+
+      fuente:
+        'diagnostico_ia',
+    };
+  }
+
+  return {
+    value: null,
+    fuente: null,
+  };
+}
+
+function diferenciaONull(
+  actual,
+  proyectado
+) {
+  const actualValue =
+    numeroFinitoONull(actual);
+
+  const proyectadoValue =
+    numeroFinitoONull(proyectado);
+
+  if (
+    actualValue === null ||
+    proyectadoValue === null
+  ) {
+    return null;
+  }
+
+  return (
+    actualValue -
+    proyectadoValue
+  );
+}
+
+function calcularMetricasAlternativa({
+  metricasOriginales = {},
+  alternativa,
+  datosActivo = {},
+  costoUnitarioEnergia = null,
+  costoUnitarioAgua = null,
+  idItemRecomendadoIA = null,
+}) {
+  const cantidad =
+    numeroFinitoONull(
+      alternativa
+        ?.cantidad_activo
+    ) ?? 1;
+
+  const precioUnitario =
+    numeroFinitoONull(
+      alternativa
+        ?.precio_base
+    );
+
+  const inversion =
+    precioUnitario === null
+      ? null
+      : precioUnitario *
+        cantidad;
+
+  const mismoProductoIA =
+    Number(
+      alternativa?.id_item
+    ) ===
+    Number(
+      idItemRecomendadoIA
+    );
+
+  const energiaProyectada =
+    obtenerConsumoEnergiaMensual({
+      especificaciones:
+        alternativa
+          ?.especificaciones,
+
+      datosActivo,
+
+      consumoIA:
+        metricasOriginales
+          ?.consumo_energia_proyectado_mes,
+
+      permitirFallbackIA:
+        mismoProductoIA,
+    });
+
+  const aguaProyectada =
+    obtenerConsumoAguaMensual({
+      especificaciones:
+        alternativa
+          ?.especificaciones,
+
+      datosActivo,
+
+      consumoIA:
+        metricasOriginales
+          ?.consumo_agua_proyectado_mes,
+
+      permitirFallbackIA:
+        mismoProductoIA,
+    });
+
+  const energiaActual =
+    numeroFinitoONull(
+      metricasOriginales
+        ?.consumo_energia_actual_mes
+    );
+
+  const aguaActual =
+    numeroFinitoONull(
+      metricasOriginales
+        ?.consumo_agua_actual_mes
+    );
+
+  const energiaNueva =
+    energiaProyectada.value;
+
+  const aguaNueva =
+    aguaProyectada.value;
+
+  const costoEnergia =
+    numeroFinitoONull(
+      costoUnitarioEnergia
+    );
+
+  const costoAgua =
+    numeroFinitoONull(
+      costoUnitarioAgua
+    );
+
+  const costoActualEnergia =
+    energiaActual !== null &&
+    costoEnergia !== null
+      ? energiaActual *
+        costoEnergia
+      : null;
+
+  const costoNuevoEnergia =
+    energiaNueva !== null &&
+    costoEnergia !== null
+      ? energiaNueva *
+        costoEnergia
+      : null;
+
+  const costoActualAgua =
+    aguaActual !== null &&
+    costoAgua !== null
+      ? aguaActual *
+        costoAgua
+      : null;
+
+  const costoNuevoAgua =
+    aguaNueva !== null &&
+    costoAgua !== null
+      ? aguaNueva *
+        costoAgua
+      : null;
+
+  const costosActualesConocidos = [
+    costoActualEnergia,
+    costoActualAgua,
+  ].filter(
+    value => value !== null
+  );
+
+  const costosNuevosConocidos = [
+    costoNuevoEnergia,
+    costoNuevoAgua,
+  ].filter(
+    value => value !== null
+  );
+
+  const costoActualMes =
+    costosActualesConocidos.length > 0
+      ? costosActualesConocidos.reduce(
+          (sum, value) =>
+            sum + value,
+          0
+        )
+      : null;
+
+  const costoProyectadoMes =
+    costosNuevosConocidos.length > 0
+      ? costosNuevosConocidos.reduce(
+          (sum, value) =>
+            sum + value,
+          0
+        )
+      : null;
+
+  const ahorrosConocidos = [];
+
+  if (
+    costoActualEnergia !== null &&
+    costoNuevoEnergia !== null
+  ) {
+    ahorrosConocidos.push(
+      costoActualEnergia -
+      costoNuevoEnergia
+    );
+  }
+
+  if (
+    costoActualAgua !== null &&
+    costoNuevoAgua !== null
+  ) {
+    ahorrosConocidos.push(
+      costoActualAgua -
+      costoNuevoAgua
+    );
+  }
+
+  const ahorroMensual =
+    ahorrosConocidos.length > 0
+      ? ahorrosConocidos.reduce(
+          (sum, value) =>
+            sum + value,
+          0
+        )
+      : null;
+
+  const reduccionEnergia =
+    diferenciaONull(
+      energiaActual,
+      energiaNueva
+    );
+
+  const reduccionAgua =
+    diferenciaONull(
+      aguaActual,
+      aguaNueva
+    );
+
+  const reduccionCarbono =
+    reduccionEnergia === null
+      ? null
+      : reduccionEnergia *
+        FACTOR_CO2_KG_POR_KWH;
+
+  const roi5Anios =
+    inversion !== null &&
+    inversion > 0 &&
+    ahorroMensual !== null
+      ? (
+          (
+            ahorroMensual *
+            MESES_PROYECCION_ROI -
+            inversion
+          ) /
+          inversion
+        ) * 100
+      : null;
+
+  const payback =
+    inversion !== null &&
+    inversion > 0 &&
+    ahorroMensual !== null &&
+    ahorroMensual > 0
+      ? inversion /
+        ahorroMensual
+      : null;
+
+  return {
+    consumo_energia_actual_mes:
+      energiaActual,
+
+    consumo_energia_proyectado_mes:
+      energiaNueva,
+
+    consumo_agua_actual_mes:
+      aguaActual,
+
+    consumo_agua_proyectado_mes:
+      aguaNueva,
+
+    costo_actual_mes:
+      costoActualMes,
+
+    costo_proyectado_mes:
+      costoProyectadoMes,
+
+    ahorro_economico_mensual:
+      ahorroMensual,
+
+    inversion_total_requerida:
+      inversion,
+
+    reduccion_energia:
+      reduccionEnergia,
+
+    reduccion_agua:
+      reduccionAgua,
+
+    reduccion_carbono:
+      reduccionCarbono,
+
+    roi_5_anios:
+      roi5Anios,
+
+    payback,
+
+    fuentes_calculo: {
+      energia_proyectada:
+        energiaProyectada.fuente,
+
+      agua_proyectada:
+        aguaProyectada.fuente,
+
+      costo_unitario_energia:
+        costoEnergia !== null
+          ? 'ultima_factura'
+          : null,
+
+      costo_unitario_agua:
+        costoAgua !== null
+          ? 'ultima_factura'
+          : null,
+
+      factor_co2:
+        FACTOR_CO2_KG_POR_KWH,
+    },
+
+    calculable: {
+      energia:
+        energiaActual !== null &&
+        energiaNueva !== null,
+
+      agua:
+        aguaActual !== null &&
+        aguaNueva !== null,
+
+      ahorro:
+        ahorroMensual !== null,
+
+      roi:
+        roi5Anios !== null,
+
+      payback:
+        payback !== null,
+    },
+  };
+}
+
+function sumarMetricaCompleta(
+  alternativas,
+  campo
+) {
+  if (
+    !Array.isArray(alternativas) ||
+    alternativas.length === 0
+  ) {
+    return null;
+  }
+
+  const valores =
+    alternativas.map(
+      alternativa =>
+        numeroFinitoONull(
+          alternativa
+            ?.metricas
+            ?.[campo]
+        )
+    );
+
+  /*
+   * Si un activo no tiene la métrica,
+   * no mostramos un total incompleto
+   * como si fuera el total real.
+   */
+  if (
+    valores.some(
+      value => value === null
+    )
+  ) {
+    return null;
+  }
+
+  return valores.reduce(
+    (sum, value) =>
+      sum + value,
+    0
+  );
+}
+
+function calcularResumenAlternativas(
+  alternativas
+) {
+  const consumoEnergiaActual =
+    sumarMetricaCompleta(
+      alternativas,
+      'consumo_energia_actual_mes'
+    );
+
+  const consumoEnergiaProyectado =
+    sumarMetricaCompleta(
+      alternativas,
+      'consumo_energia_proyectado_mes'
+    );
+
+  const consumoAguaActual =
+    sumarMetricaCompleta(
+      alternativas,
+      'consumo_agua_actual_mes'
+    );
+
+  const consumoAguaProyectado =
+    sumarMetricaCompleta(
+      alternativas,
+      'consumo_agua_proyectado_mes'
+    );
+
+  const costoActual =
+    sumarMetricaCompleta(
+      alternativas,
+      'costo_actual_mes'
+    );
+
+  const costoProyectado =
+    sumarMetricaCompleta(
+      alternativas,
+      'costo_proyectado_mes'
+    );
+
+  const ahorroMensual =
+    sumarMetricaCompleta(
+      alternativas,
+      'ahorro_economico_mensual'
+    );
+
+  const inversion =
+    sumarMetricaCompleta(
+      alternativas,
+      'inversion_total_requerida'
+    );
+
+  const reduccionEnergia =
+    sumarMetricaCompleta(
+      alternativas,
+      'reduccion_energia'
+    );
+
+  const reduccionAgua =
+    sumarMetricaCompleta(
+      alternativas,
+      'reduccion_agua'
+    );
+
+  const reduccionCarbono =
+    sumarMetricaCompleta(
+      alternativas,
+      'reduccion_carbono'
+    );
+
+  const roi =
+    inversion !== null &&
+    inversion > 0 &&
+    ahorroMensual !== null
+      ? (
+          (
+            ahorroMensual *
+            MESES_PROYECCION_ROI -
+            inversion
+          ) /
+          inversion
+        ) * 100
+      : null;
+
+  const payback =
+    inversion !== null &&
+    inversion > 0 &&
+    ahorroMensual !== null &&
+    ahorroMensual > 0
+      ? inversion /
+        ahorroMensual
+      : null;
+
+  const activosConMetricasCompletas =
+    alternativas.filter(
+      alternativa =>
+        alternativa
+          ?.metricas
+          ?.calculable
+          ?.ahorro === true
+    ).length;
+
+  return {
+    cantidad:
+      alternativas.length,
+
+    consumo_energia_actual_mes:
+      consumoEnergiaActual,
+
+    consumo_energia_proyectado_mes:
+      consumoEnergiaProyectado,
+
+    consumo_agua_actual_mes:
+      consumoAguaActual,
+
+    consumo_agua_proyectado_mes:
+      consumoAguaProyectado,
+
+    costo_actual_mes:
+      costoActual,
+
+    costo_proyectado_mes:
+      costoProyectado,
+
+    ahorro_economico_mensual:
+      ahorroMensual,
+
+    inversion_total_requerida:
+      inversion,
+
+    reduccion_energia:
+      reduccionEnergia,
+
+    reduccion_agua:
+      reduccionAgua,
+
+    reduccion_carbono:
+      reduccionCarbono,
+
+    roi,
+
+    payback,
+
+    cobertura_calculo: {
+      activos_seleccionados:
+        alternativas.length,
+
+      activos_con_metricas_completas:
+        activosConMetricasCompletas,
+
+      completa:
+        alternativas.length > 0 &&
+        activosConMetricasCompletas ===
+          alternativas.length,
+    },
+
+    calculado_at:
+      new Date().toISOString(),
+
+    calculado_por:
+      'backend',
+  };
 }
 
 function esTipoElectrodomestico(activo) {
@@ -1490,55 +2892,172 @@ async function getMisDiagnosticos(
   req,
   res
 ) {
-
   const idUsuario =
-    req.user?.id_usuario;
+    Number(
+      req.user?.id_usuario
+    );
 
   try {
-
-    if (!idUsuario) {
+    if (
+      !Number.isInteger(
+        idUsuario
+      )
+    ) {
       return res.status(401).json({
         error:
-          'Usuario no autenticado'
+          'Usuario no autenticado',
       });
     }
 
+    /*
+     * La relación mipyme_usuario garantiza
+     * que el cliente solamente pueda
+     * consultar información de su empresa.
+     */
     const mipymeResult =
       await pool.query(
         `
-        SELECT m.id_mipyme
+        SELECT
+          m.id_mipyme,
+          m.nombre_mipyme,
+          m.nit,
+          m.municipio
         FROM mipyme_usuario mu
         INNER JOIN mipyme m
-          ON m.id_mipyme = mu.id_mipyme
+          ON m.id_mipyme =
+             mu.id_mipyme
         WHERE mu.id_usuario = $1
+          AND COALESCE(
+            m.estado,
+            'activo'
+          ) != 'eliminado'
+        ORDER BY
+          mu.id_mipyme ASC
+        LIMIT 1
         `,
-        [idUsuario]
+        [
+          idUsuario
+        ]
       );
 
-    const idMipyme =
-      mipymeResult.rows[0]
-        ?.id_mipyme;
-
-    if (!idMipyme) {
-
+    if (
+      mipymeResult.rows.length === 0
+    ) {
       return res.status(404).json({
         error:
-          'No se encontró una mipyme asociada'
+          'No se encontró una empresa asociada al usuario',
       });
-
     }
 
-    const diagnostico =
-      await construirDiagnosticoCompleto(
-        idMipyme
+    const mipyme =
+      mipymeResult.rows[0];
+
+    /*
+     * Esta es la función correcta.
+     * Devuelve los diagnósticos ordenados
+     * desde el más reciente.
+     */
+    const diagnosticosOriginales =
+      await construirDiagnosticosCompletos(
+        mipyme.id_mipyme
       );
 
+    /*
+     * Añadimos un estado de presentación
+     * sin modificar la estructura guardada.
+     */
+    const diagnosticos =
+      diagnosticosOriginales.map(
+        diagnostico => {
+          const metricas =
+            diagnostico.metricas &&
+            typeof diagnostico.metricas ===
+              'object'
+              ? diagnostico.metricas
+              : {};
+
+          const activosSeleccionados =
+            Array.isArray(
+              metricas
+                .activos_seleccionados
+            )
+              ? metricas
+                  .activos_seleccionados
+              : [];
+
+          const alternativasSeleccionadas =
+            Array.isArray(
+              metricas
+                .alternativas_seleccionadas
+            )
+              ? metricas
+                  .alternativas_seleccionadas
+              : [];
+
+          const tieneSeleccion =
+            activosSeleccionados.length >
+              0 &&
+            alternativasSeleccionadas.length >
+              0;
+
+          return {
+            ...diagnostico,
+
+            estado_propuesta:
+              tieneSeleccion
+                ? 'seleccion_guardada'
+                : 'recomendacion_generada',
+
+            cantidad_activos_propuestos:
+              activosSeleccionados.length,
+
+            cantidad_alternativas_seleccionadas:
+              alternativasSeleccionadas
+                .length,
+          };
+        }
+      );
+
+    const propuestaActual =
+      diagnosticos.length > 0
+        ? diagnosticos[0]
+        : null;
+
     return res.status(200).json({
-      diagnostico,
+      empresa: {
+        id_mipyme:
+          Number(
+            mipyme.id_mipyme
+          ),
+
+        nombre:
+          mipyme.nombre_mipyme,
+
+        nit:
+          mipyme.nit,
+
+        municipio:
+          mipyme.municipio,
+      },
+
+      total_diagnosticos:
+        diagnosticos.length,
+
+      /*
+       * Mantiene compatibilidad con el
+       * frontend anterior.
+       */
+      diagnosticos,
+
+      /*
+       * Será la fuente principal de la
+       * nueva pantalla Mi propuesta.
+       */
+      propuesta_actual:
+        propuestaActual,
     });
 
   } catch (err) {
-
     console.error(
       'Error getMisDiagnosticos:',
       err
@@ -1546,11 +3065,9 @@ async function getMisDiagnosticos(
 
     return res.status(500).json({
       error:
-        'Error interno'
+        'No fue posible obtener la propuesta del cliente',
     });
-
   }
-
 }
 
 async function obtenerCatalogoRelevante(
@@ -1573,31 +3090,507 @@ async function obtenerCatalogoRelevante(
   }
 
   const result = await client.query(
-    `
-    SELECT
-      id_item,
-      tipo_item,
-      nombre,
-      descripcion,
-      especificaciones,
-      precio_base,
-      disponible,
-      id_proveedor,
-      url_origen
-    FROM item_catalogo
-    WHERE disponible = true
-      AND EXISTS (
-        SELECT 1
-        FROM unnest($1::text[]) c
-        WHERE LOWER(
-          COALESCE(tipo_item,'')
-        ) = c
-      )
-    `,
-    [categorias]
-  );
+  `
+  SELECT
+    i.id_item,
+    i.tipo_item,
+    i.nombre,
+    i.descripcion,
+    i.especificaciones,
+    i.precio_base,
+    i.disponible,
+    i.id_proveedor,
+    i.url_origen,
+
+    p.razon_social
+      AS nombre_proveedor,
+
+    p.nit
+      AS nit_proveedor,
+
+    p.calificacion
+      AS calificacion_proveedor
+
+  FROM item_catalogo i
+
+  INNER JOIN proveedor p
+    ON p.id_proveedor =
+       i.id_proveedor
+
+  WHERE i.disponible = true
+
+    AND COALESCE(
+      i.estado,
+      'activo'
+    ) = 'activo'
+
+    AND COALESCE(
+      p.estado,
+      'activo'
+    ) = 'activo'
+
+    AND EXISTS (
+      SELECT 1
+      FROM unnest(
+        $1::text[]
+      ) categoria
+      WHERE LOWER(
+        TRIM(
+          COALESCE(
+            i.tipo_item,
+            ''
+          )
+        )
+      ) = categoria
+    )
+
+  ORDER BY
+    p.calificacion
+      DESC NULLS LAST,
+
+    i.precio_base
+      ASC NULLS LAST,
+
+    i.nombre ASC
+  `,
+  [
+    categorias
+  ]
+);
 
   return result.rows;
+
+}
+
+async function getAlternativasActivoDiagnostico(
+  req,
+  res
+) {
+
+  const idDiagnostico =
+    Number(
+      req.params.idDiagnostico
+    );
+
+  const idActivo =
+    Number(
+      req.params.idActivo
+    );
+
+  try {
+
+    if (
+      !Number.isInteger(idDiagnostico) ||
+      !Number.isInteger(idActivo)
+    ) {
+      return res.status(400).json({
+        error:
+          'El diagnóstico y el activo deben ser numéricos',
+      });
+    }
+
+    /*
+     * Confirmamos que el diagnóstico y el
+     * activo existen y pertenecen a la
+     * misma Mipyme.
+     */
+    const contextoResult =
+      await pool.query(
+        `
+        SELECT
+          d.id_diagnostico,
+          d.id_mipyme,
+          d.metricas AS metricas_diagnostico,
+
+          a.id_activo,
+          a.nombre AS nombre_activo,
+          a.tipo AS tipo_activo,
+          a.marca AS marca_activo,
+          a.modelo AS modelo_activo,
+          a.descripcion AS descripcion_activo,
+          a.datos AS datos_activo,
+          a.cantidad AS cantidad_activo
+        FROM diagnostico d
+        INNER JOIN activo a
+          ON a.id_mipyme = d.id_mipyme
+        WHERE d.id_diagnostico = $1
+          AND a.id_activo = $2
+          AND COALESCE(
+            d.estado,
+            'activo'
+          ) != 'eliminado'
+        LIMIT 1
+        `,
+        [
+          idDiagnostico,
+          idActivo,
+        ]
+      );
+
+    if (
+      contextoResult.rows.length === 0
+    ) {
+      return res.status(404).json({
+        error:
+          'No se encontró el activo dentro del diagnóstico indicado',
+      });
+    }
+
+    const activo =
+      contextoResult.rows[0];
+
+    const metricasDiagnostico =
+      activo.metricas_diagnostico &&
+      typeof activo.metricas_diagnostico ===
+        'object'
+        ? activo.metricas_diagnostico
+        : {};
+
+    const activosDiagnostico =
+      Array.isArray(
+        metricasDiagnostico.activos
+      )
+        ? metricasDiagnostico.activos
+        : [];
+
+    const activoDiagnostico =
+      activosDiagnostico.find(
+        item =>
+          Number(
+            item?.id_activo
+          ) ===
+          Number(
+            activo.id_activo
+          )
+      );
+
+    if (!activoDiagnostico) {
+      return res.status(400).json({
+        error:
+          'No se encontraron las métricas originales del activo dentro del diagnóstico',
+      });
+    }
+
+    const metricasOriginales =
+      activoDiagnostico.metricas &&
+      typeof activoDiagnostico.metricas ===
+        'object'
+        ? activoDiagnostico.metricas
+        : {};
+
+    const idItemRecomendadoIA =
+      activoDiagnostico
+        ?.producto_recomendado
+        ?.id_item ?? null;
+
+    if (!activo.tipo_activo) {
+      return res.status(400).json({
+        error:
+          'El activo no tiene un tipo definido',
+      });
+    }
+
+    /*
+    * Costos unitarios más recientes para
+    * calcular los beneficios financieros
+    * de cada alternativa.
+    */
+    const costosResult =
+      await pool.query(
+        `
+        SELECT
+          tipo,
+          costo_unitario,
+          periodo_fin
+        FROM consumo
+        WHERE id_mipyme = $1
+          AND costo_unitario IS NOT NULL
+        ORDER BY periodo_fin DESC
+        `,
+        [
+          activo.id_mipyme
+        ]
+      );
+
+    let costoUnitarioEnergia = null;
+    let costoUnitarioAgua = null;
+
+    for (
+      const consumo
+      of costosResult.rows
+    ) {
+      const tipo =
+        normalizeText(
+          consumo.tipo
+        );
+
+      if (
+        costoUnitarioEnergia === null &&
+        tipo.includes('energia')
+      ) {
+        costoUnitarioEnergia =
+          numeroFinitoONull(
+            consumo.costo_unitario
+          );
+      }
+
+      if (
+        costoUnitarioAgua === null &&
+        tipo.includes('agua')
+      ) {
+        costoUnitarioAgua =
+          numeroFinitoONull(
+            consumo.costo_unitario
+          );
+      }
+
+      if (
+        costoUnitarioEnergia !== null &&
+        costoUnitarioAgua !== null
+      ) {
+        break;
+      }
+    }
+
+    /*
+     * Consultamos productos disponibles
+     * del mismo tipo y añadimos los datos
+     * comerciales del proveedor.
+     */
+    const alternativasResult =
+      await pool.query(
+        `
+        SELECT
+          i.id_item,
+          i.tipo_item,
+          i.nombre,
+          i.descripcion,
+          i.especificaciones,
+          i.precio_base,
+          i.disponible,
+          i.id_proveedor,
+          i.url_origen,
+
+          p.razon_social
+            AS nombre_proveedor,
+
+          p.nit
+            AS nit_proveedor,
+
+          p.calificacion
+            AS calificacion_proveedor
+
+        FROM item_catalogo i
+
+        INNER JOIN proveedor p
+          ON p.id_proveedor =
+             i.id_proveedor
+
+        WHERE i.disponible = true
+
+          AND COALESCE(
+            i.estado,
+            'activo'
+          ) = 'activo'
+
+          AND COALESCE(
+            p.estado,
+            'activo'
+          ) = 'activo'
+
+          AND LOWER(
+            TRIM(
+              COALESCE(
+                i.tipo_item,
+                ''
+              )
+            )
+          ) = LOWER(
+            TRIM($1)
+          )
+
+        ORDER BY
+          p.calificacion DESC NULLS LAST,
+          i.precio_base ASC NULLS LAST,
+          i.nombre ASC
+        `,
+        [
+          activo.tipo_activo,
+        ]
+      );
+
+    const alternativas =
+      alternativasResult.rows.map(
+        item => {
+          const cantidadActivo =
+            numeroFinitoONull(
+              activo.cantidad_activo
+            ) ?? 1;
+
+          const alternativa = {
+            id_item:
+              Number(
+                item.id_item
+              ),
+
+            id_activo:
+              Number(
+                activo.id_activo
+              ),
+
+            tipo_item:
+              item.tipo_item,
+
+            nombre:
+              item.nombre,
+
+            descripcion:
+              item.descripcion,
+
+            especificaciones:
+              item.especificaciones,
+
+            precio_base:
+              numeroFinitoONull(
+                item.precio_base
+              ),
+
+            disponible:
+              item.disponible,
+
+            url_origen:
+              item.url_origen,
+
+            cantidad_activo:
+              cantidadActivo,
+
+            /*
+            * Si coincide con la recomendación
+            * original, conservamos la fuente IA.
+            * Las demás opciones aún no han sido
+            * elegidas por el usuario.
+            */
+            fuente:
+              Number(
+                item.id_item
+              ) ===
+              Number(
+                idItemRecomendadoIA
+              )
+                ? 'ia'
+                : 'catalogo',
+
+            recomendada_por_ia:
+              Number(
+                item.id_item
+              ) ===
+              Number(
+                idItemRecomendadoIA
+              ),
+
+            proveedor: {
+              id_proveedor:
+                Number(
+                  item.id_proveedor
+                ),
+
+              nombre:
+                item.nombre_proveedor,
+
+              nit:
+                item.nit_proveedor,
+
+              calificacion:
+                item.calificacion_proveedor,
+            },
+          };
+
+          alternativa.metricas =
+            calcularMetricasAlternativa({
+              metricasOriginales,
+
+              alternativa,
+
+              datosActivo:
+                activo.datos_activo ?? {},
+
+              costoUnitarioEnergia,
+
+              costoUnitarioAgua,
+
+              idItemRecomendadoIA,
+            });
+
+          return alternativa;
+        }
+      );
+
+    return res.status(200).json({
+      activo: {
+        id_activo:
+          activo.id_activo,
+
+        nombre:
+          activo.nombre_activo,
+
+        tipo:
+          activo.tipo_activo,
+
+        marca:
+          activo.marca_activo,
+
+        modelo:
+          activo.modelo_activo,
+
+        descripcion:
+          activo.descripcion_activo,
+
+        datos:
+          activo.datos_activo,
+
+        cantidad:
+        Number(
+          activo.cantidad_activo ?? 1
+        ),
+        metricas_originales:
+          metricasOriginales,
+
+        producto_recomendado_ia:
+          activoDiagnostico
+            .producto_recomendado ??
+          null,
+      },
+
+      total_alternativas:
+        alternativas.length,
+      
+      costos_unitarios: {
+        energia:
+          costoUnitarioEnergia,
+
+        agua:
+          costoUnitarioAgua,
+      },
+
+      factor_co2:
+        FACTOR_CO2_KG_POR_KWH,
+
+      alternativas,
+    });
+
+  } catch (err) {
+
+    console.error(
+      'Error obteniendo alternativas del activo:',
+      err
+    );
+
+    return res.status(500).json({
+      error:
+        'Error interno al obtener las alternativas',
+    });
+
+  }
 
 }
 
@@ -1606,37 +3599,559 @@ async function guardarSeleccionActivos(
   res
 ) {
 
-  const {
-    idDiagnostico
-  } = req.params;
+  const idDiagnostico =
+    Number(
+      req.params.idDiagnostico
+    );
 
   const {
-    activos_seleccionados
+    activos_seleccionados = [],
+    alternativas_seleccionadas = [],
+    resumen_seleccionado = null,
   } = req.body;
 
   try {
 
-    const result =
-      await pool.query(
-        `
-        SELECT metricas
-        FROM diagnostico
-        WHERE id_diagnostico = $1
-        `,
-        [idDiagnostico]
-      );
-
-    if(result.rows.length === 0){
-      return res.status(404).json({
-        error: 'Diagnóstico no encontrado'
+    if (
+      !Number.isInteger(
+        idDiagnostico
+      )
+    ) {
+      return res.status(400).json({
+        error:
+          'El diagnóstico debe ser numérico',
       });
     }
 
-    const metricas =
-      result.rows[0].metricas || {};
+    if (
+      !Array.isArray(
+        activos_seleccionados
+      )
+    ) {
+      return res.status(400).json({
+        error:
+          'activos_seleccionados debe ser una lista',
+      });
+    }
 
-    metricas.activos_seleccionados =
-      activos_seleccionados;
+    if (
+      !Array.isArray(
+        alternativas_seleccionadas
+      )
+    ) {
+      return res.status(400).json({
+        error:
+          'alternativas_seleccionadas debe ser una lista',
+      });
+    }
+
+    /*
+     * Normalizamos los activos y quitamos
+     * IDs repetidos o inválidos.
+     */
+    const idsActivos = [
+      ...new Set(
+        activos_seleccionados
+          .map(Number)
+          .filter(Number.isInteger)
+      )
+    ];
+
+    const diagnosticoResult =
+      await pool.query(
+        `
+        SELECT
+          id_diagnostico,
+          id_mipyme,
+          metricas
+        FROM diagnostico
+        WHERE id_diagnostico = $1
+          AND COALESCE(
+            estado,
+            'activo'
+          ) != 'eliminado'
+        `,
+        [
+          idDiagnostico
+        ]
+      );
+
+    if (
+      diagnosticoResult
+        .rows
+        .length === 0
+    ) {
+      return res.status(404).json({
+        error:
+          'Diagnóstico no encontrado',
+      });
+    }
+
+    const diagnostico =
+      diagnosticoResult.rows[0];
+
+    /*
+    * Métricas originales del diagnóstico.
+    * Contienen la línea base del activo y
+    * la recomendación inicial de la IA.
+    */
+    const metricasDiagnostico =
+      diagnostico.metricas &&
+      typeof diagnostico.metricas ===
+        'object'
+        ? diagnostico.metricas
+        : {};
+
+    const activosDiagnostico =
+      Array.isArray(
+        metricasDiagnostico.activos
+      )
+        ? metricasDiagnostico.activos
+        : [];
+
+    /*
+    * Consultamos los costos unitarios más
+    * recientes. Estos valores no se reciben
+    * desde Flutter.
+    */
+    const costosResult =
+      await pool.query(
+        `
+        SELECT
+          tipo,
+          costo_unitario,
+          periodo_fin
+        FROM consumo
+        WHERE id_mipyme = $1
+          AND costo_unitario IS NOT NULL
+        ORDER BY periodo_fin DESC
+        `,
+        [
+          diagnostico.id_mipyme
+        ]
+      );
+
+    let costoUnitarioEnergia = null;
+    let costoUnitarioAgua = null;
+
+    for (
+      const consumo
+      of costosResult.rows
+    ) {
+      const tipo =
+        normalizeText(
+          consumo.tipo
+        );
+
+      if (
+        costoUnitarioEnergia === null &&
+        tipo.includes('energia')
+      ) {
+        costoUnitarioEnergia =
+          numeroFinitoONull(
+            consumo.costo_unitario
+          );
+      }
+
+      if (
+        costoUnitarioAgua === null &&
+        tipo.includes('agua')
+      ) {
+        costoUnitarioAgua =
+          numeroFinitoONull(
+            consumo.costo_unitario
+          );
+      }
+
+      if (
+        costoUnitarioEnergia !== null &&
+        costoUnitarioAgua !== null
+      ) {
+        break;
+      }
+    }
+
+    /*
+     * Validamos que los activos realmente
+     * pertenezcan a la Mipyme del
+     * diagnóstico.
+     */
+    if (idsActivos.length > 0) {
+
+      const activosResult =
+        await pool.query(
+          `
+          SELECT id_activo
+          FROM activo
+          WHERE id_mipyme = $1
+            AND id_activo =
+                ANY($2::int[])
+          `,
+          [
+            diagnostico.id_mipyme,
+            idsActivos,
+          ]
+        );
+
+      const activosEncontrados =
+        activosResult.rows.map(
+          row =>
+            Number(
+              row.id_activo
+            )
+        );
+
+      const activosInvalidos =
+        idsActivos.filter(
+          id =>
+            !activosEncontrados
+              .includes(id)
+        );
+
+      if (
+        activosInvalidos.length > 0
+      ) {
+        return res.status(400).json({
+          error:
+            'Uno o más activos no pertenecen a la Mipyme del diagnóstico',
+
+          activos_invalidos:
+            activosInvalidos,
+        });
+      }
+    }
+
+    /*
+     * No confiamos en nombres, precios ni
+     * proveedor enviados por Flutter.
+     * Consultamos nuevamente cada producto
+     * y creamos una fotografía confiable.
+     */
+    const alternativasValidadas = [];
+
+    for (const seleccion of alternativas_seleccionadas) {
+
+      const idActivo =
+        Number(
+          seleccion?.id_activo
+        );
+
+      const idItem =
+        Number(
+          seleccion?.id_item
+        );
+
+      const fuente =
+        seleccion?.fuente === 'ia'
+          ? 'ia'
+          : 'usuario';
+
+      if (
+        !Number.isInteger(idActivo) ||
+        !Number.isInteger(idItem)
+      ) {
+        return res.status(400).json({
+          error:
+            'Cada alternativa debe contener id_activo e id_item válidos',
+        });
+      }
+
+      if (
+        !idsActivos.includes(
+          idActivo
+        )
+      ) {
+        return res.status(400).json({
+          error:
+            `El activo ${idActivo} tiene una alternativa, pero no está incluido en la propuesta`,
+        });
+      }
+
+      const alternativaResult =
+        await pool.query(
+          `
+          SELECT
+            a.id_activo,
+            a.nombre
+              AS nombre_activo,
+            a.tipo
+              AS tipo_activo,
+            a.cantidad,
+            a.datos AS datos_activo,
+
+            i.id_item,
+            i.tipo_item,
+            i.nombre
+              AS nombre_producto,
+            i.descripcion,
+            i.especificaciones,
+            i.precio_base,
+            i.url_origen,
+            i.id_proveedor,
+
+            p.razon_social
+              AS nombre_proveedor,
+            p.nit
+              AS nit_proveedor,
+            p.calificacion
+              AS calificacion_proveedor
+
+          FROM activo a
+
+          INNER JOIN diagnostico d
+            ON d.id_mipyme =
+               a.id_mipyme
+
+          INNER JOIN item_catalogo i
+            ON LOWER(
+                 TRIM(
+                   COALESCE(
+                     i.tipo_item,
+                     ''
+                   )
+                 )
+               )
+               =
+               LOWER(
+                 TRIM(
+                   COALESCE(
+                     a.tipo,
+                     ''
+                   )
+                 )
+               )
+
+          INNER JOIN proveedor p
+            ON p.id_proveedor =
+               i.id_proveedor
+
+          WHERE d.id_diagnostico = $1
+            AND a.id_activo = $2
+            AND i.id_item = $3
+            AND i.disponible = true
+            AND COALESCE(
+              i.estado,
+              'activo'
+            ) = 'activo'
+            AND COALESCE(
+              p.estado,
+              'activo'
+            ) = 'activo'
+
+          LIMIT 1
+          `,
+          [
+            idDiagnostico,
+            idActivo,
+            idItem,
+          ]
+        );
+
+      if (
+        alternativaResult
+          .rows
+          .length === 0
+      ) {
+        return res.status(400).json({
+          error:
+            `La alternativa seleccionada para el activo ${idActivo} no está disponible o no es compatible`,
+        });
+      }
+
+      const item =
+        alternativaResult.rows[0];
+
+      const activoDiagnostico =
+        activosDiagnostico.find(
+          activo =>
+            Number(
+              activo?.id_activo
+            ) ===
+            Number(
+              item.id_activo
+            )
+        );
+
+      if (!activoDiagnostico) {
+        return res.status(400).json({
+          error:
+            `No se encontraron las métricas originales del activo ${item.id_activo}`,
+        });
+      }
+
+      const alternativaValidada = {
+        id_activo:
+          Number(
+            item.id_activo
+          ),
+
+        nombre_activo:
+          item.nombre_activo,
+
+        tipo_activo:
+          item.tipo_activo,
+
+        cantidad_activo:
+          Number(
+            item.cantidad ?? 1
+          ),
+
+        id_item:
+          Number(
+            item.id_item
+          ),
+
+        fuente,
+
+        tipo_item:
+          item.tipo_item,
+
+        nombre:
+          item.nombre_producto,
+
+        descripcion:
+          item.descripcion,
+
+        especificaciones:
+          item.especificaciones,
+
+        precio_base:
+          numeroFinitoONull(
+            item.precio_base
+          ),
+
+        url_origen:
+          item.url_origen,
+
+        proveedor: {
+          id_proveedor:
+            Number(
+              item.id_proveedor
+            ),
+
+          nombre:
+            item.nombre_proveedor,
+
+          nit:
+            item.nit_proveedor,
+
+          calificacion:
+            item.calificacion_proveedor,
+        },
+
+        seleccionado_at:
+          new Date().toISOString(),
+
+        seleccionado_by:
+          req.user.id_usuario,
+      };
+
+      /*
+      * El ID recomendado inicialmente permite
+      * conservar las métricas de la IA únicamente
+      * cuando continúa seleccionado ese producto.
+      */
+      const idItemRecomendadoIA =
+        activoDiagnostico
+          ?.producto_recomendado
+          ?.id_item ?? null;
+
+      alternativaValidada.metricas =
+        calcularMetricasAlternativa({
+          metricasOriginales:
+            activoDiagnostico
+              ?.metricas ?? {},
+
+          alternativa:
+            alternativaValidada,
+
+          datosActivo:
+            item.datos_activo ?? {},
+
+          costoUnitarioEnergia,
+
+          costoUnitarioAgua,
+
+          idItemRecomendadoIA,
+        });
+
+      alternativasValidadas.push(
+        alternativaValidada
+      );
+    }
+
+    const idsAlternativas =
+      alternativasValidadas.map(
+        alternativa =>
+          Number(
+            alternativa.id_activo
+          )
+      );
+
+    const idsAlternativasUnicas =
+      new Set(
+        idsAlternativas
+      );
+
+    if (
+      idsAlternativasUnicas.size !==
+      idsAlternativas.length
+    ) {
+      return res.status(400).json({
+        error:
+          'Un activo no puede tener más de una alternativa seleccionada',
+      });
+    }
+
+    /*
+    * Todos los activos incluidos deben
+    * tener exactamente una alternativa.
+    */
+    const idsConAlternativa =
+      alternativasValidadas.map(
+        alternativa =>
+          Number(
+            alternativa.id_activo
+          )
+      );
+
+    const activosSinAlternativa =
+      idsActivos.filter(
+        idActivo =>
+          !idsConAlternativa.includes(
+            idActivo
+          )
+      );
+
+    if (
+      activosSinAlternativa.length > 0
+    ) {
+      return res.status(400).json({
+        error:
+          'Todos los activos incluidos deben tener una alternativa seleccionada',
+
+        activos_sin_alternativa:
+          activosSinAlternativa,
+      });
+    }
+
+    const resumenCalculado =
+      calcularResumenAlternativas(
+        alternativasValidadas
+      );
+
+    const metricas = {
+      ...metricasDiagnostico,
+
+      activos_seleccionados:
+        idsActivos,
+
+      alternativas_seleccionadas:
+        alternativasValidadas,
+
+      resumen_seleccionado:
+        resumenCalculado,
+    };
 
     const updated =
       await pool.query(
@@ -1652,21 +4167,28 @@ async function guardarSeleccionActivos(
         [
           metricas,
           req.user.id_usuario,
-          idDiagnostico
+          idDiagnostico,
         ]
       );
 
-    return res.json({
+    return res.status(200).json({
+      message:
+        'Selección y alternativas guardadas correctamente',
+
       diagnostico:
-        updated.rows[0]
+        updated.rows[0],
     });
 
-  } catch(err){
+  } catch (err) {
 
-    console.error(err);
+    console.error(
+      'Error guardando selección del diagnóstico:',
+      err
+    );
 
     return res.status(500).json({
-      error: 'Error interno'
+      error:
+        'Error interno al guardar la selección',
     });
   }
 }
@@ -1675,5 +4197,6 @@ module.exports = {
   generarYSyncDiagnosticos,
   getMisDiagnosticos,
   construirDiagnosticosCompletos,
+  getAlternativasActivoDiagnostico,
   guardarSeleccionActivos,
 };
