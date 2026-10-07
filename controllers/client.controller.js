@@ -5,10 +5,40 @@ const { findCiiuByCode } = require('../services/ciiuService');
 const { sendWelcomeEmail } = require('../utils/authMail');
 const { isDocumentoONit, isNitJuridico } = require('../utils/validators');
 const { construirDiagnosticosCompletos } = require('./diagnostico.controller');
+const {
+  getActorContext,
+  requireClientAccess,
+  requireMipymeAccess,
+  linkAdvisorToMipyme,
+} = require('../utils/accessControl');
 
 // GET /api/client
 async function getClients(req, res) {
   try {
+    const actor = await getActorContext(pool, req.user?.id_usuario);
+
+    if (!actor) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
+    }
+
+    if (!['asesor', 'administrador', 'super administrador'].includes(actor.role)) {
+      return res.status(403).json({ error: 'No tiene acceso al listado de clientes' });
+    }
+
+    const advisorFilter = actor.role === 'asesor'
+      ? `AND EXISTS (
+          SELECT 1
+          FROM asesor a2
+          INNER JOIN asesor_mipyme am2
+            ON am2.id_asesor = a2.id_asesor
+          WHERE a2.id_usuario = $1
+            AND COALESCE(a2.estado, 'activo') = 'activo'
+            AND am2.id_mipyme = m.id_mipyme
+        )`
+      : '';
+
+    const params = actor.role === 'asesor' ? [actor.idUsuario] : [];
+
     const result = await pool.query(
       `
       SELECT
@@ -17,51 +47,71 @@ async function getClients(req, res) {
         u.email,
         u.documento,
         u.telefono,
-
         r.nombre_rol,
         r.id_rol,
-
+        m.id_mipyme,
         m.nombre_mipyme,
         m.municipio,
         m.tipo_empresa,
         u.estado,
         u.estado_observaciones,
         u.created_at
-
       FROM usuario u
-
-      LEFT JOIN rol r
-        ON r.id_rol = u.id_rol
-
-      LEFT JOIN mipyme_usuario mu
-        ON mu.id_usuario = u.id_usuario
-
-      LEFT JOIN mipyme m
-        ON m.id_mipyme = mu.id_mipyme
-
+      LEFT JOIN rol r ON r.id_rol = u.id_rol
+      LEFT JOIN mipyme_usuario mu ON mu.id_usuario = u.id_usuario
+      LEFT JOIN mipyme m ON m.id_mipyme = mu.id_mipyme
       WHERE r.nombre_rol = 'Cliente'
-      AND u.estado = 'activo'
-
+        AND u.estado = 'activo'
+        ${advisorFilter}
       ORDER BY u.created_at DESC
-      `
+      `,
+      params,
     );
 
-    return res.status(200).json({
-      clients: result.rows,
-    });
-
+    return res.status(200).json({ clients: result.rows });
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error('Error al listar clientes:', err);
-    return res.status(500).json({
-      error: 'Error interno al listar clientes',
-    });
+    return res.status(500).json({ error: 'Error interno al listar clientes' });
   }
 }
 
 async function getClientsByEstado(req, res) {
-  const { estado } = req.headers
+  const estado = String(req.headers.estado || '').trim();
 
   try {
+    if (!estado) {
+      return res.status(400).json({ error: 'estado es obligatorio' });
+    }
+
+    const actor = await getActorContext(pool, req.user?.id_usuario);
+
+    if (!actor) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
+    }
+
+    if (!['asesor', 'administrador', 'super administrador'].includes(actor.role)) {
+      return res.status(403).json({ error: 'No tiene acceso al listado de clientes' });
+    }
+
+    const advisorFilter = actor.role === 'asesor'
+      ? `AND EXISTS (
+          SELECT 1
+          FROM asesor a2
+          INNER JOIN asesor_mipyme am2
+            ON am2.id_asesor = a2.id_asesor
+          WHERE a2.id_usuario = $2
+            AND COALESCE(a2.estado, 'activo') = 'activo'
+            AND am2.id_mipyme = m.id_mipyme
+        )`
+      : '';
+
+    const params = actor.role === 'asesor'
+      ? [estado, actor.idUsuario]
+      : [estado];
+
     const result = await pool.query(
       `
       SELECT
@@ -70,51 +120,36 @@ async function getClientsByEstado(req, res) {
         u.email,
         u.documento,
         u.telefono,
-
         r.nombre_rol,
         r.id_rol,
-
+        m.id_mipyme,
         m.nombre_mipyme,
         m.municipio,
         m.tipo_empresa,
         u.estado,
         u.estado_observaciones,
         u.created_at
-
       FROM usuario u
-
-      LEFT JOIN rol r
-        ON r.id_rol = u.id_rol
-
-      LEFT JOIN mipyme_usuario mu
-        ON mu.id_usuario = u.id_usuario
-
-      LEFT JOIN mipyme m
-        ON m.id_mipyme = mu.id_mipyme
-
+      LEFT JOIN rol r ON r.id_rol = u.id_rol
+      LEFT JOIN mipyme_usuario mu ON mu.id_usuario = u.id_usuario
+      LEFT JOIN mipyme m ON m.id_mipyme = mu.id_mipyme
       WHERE r.nombre_rol = 'Cliente'
-      AND u.estado = $1
-
+        AND u.estado = $1
+        ${advisorFilter}
       ORDER BY u.created_at DESC
       `,
-      [estado]
+      params,
     );
 
-    return res.status(200).json({
-      clients: result.rows,
-    });
-
+    return res.status(200).json({ clients: result.rows });
   } catch (err) {
-    console.error('Error al listar clientes:', err);
-    return res.status(500).json({
-      error: 'Error interno al listar clientes',
-    });
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
+    console.error('Error al listar clientes por estado:', err);
+    return res.status(500).json({ error: 'Error interno al listar clientes' });
   }
 }
-
-
-
-// POST /api/user
 
 async function createClient(req, res) {
   const {
@@ -126,6 +161,8 @@ async function createClient(req, res) {
     created_by
   } = req.body;
 
+  const actorId = req.user?.id_usuario;
+
   try {
     // 1️⃣ Validaciones
     if (!documento || !nombre_usuario || !email || !password) {
@@ -134,10 +171,8 @@ async function createClient(req, res) {
       });
     }
 
-    if (!created_by) {
-      return res.status(400).json({
-        error: 'created_by es obligatorio',
-      });
+    if (!actorId) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
 
     // 2️⃣ Obtener el id_rol del rol "Cliente"
@@ -180,12 +215,14 @@ async function createClient(req, res) {
         password_hash,
         id_rol,
         estado,
+        estado_acceso,
+        must_change_password,
         created_at,
         updated_at,
         created_by,
         updated_by
       )
-      VALUES ($1, $2, $3, $4, $5, $6, 'activo', NOW(), NULL, $7, NULL)
+      VALUES ($1, $2, $3, $4, $5, $6, 'activo', 'activo', TRUE, NOW(), NULL, $7, NULL)
       RETURNING
         id_usuario,
         documento,
@@ -204,7 +241,7 @@ async function createClient(req, res) {
         telefono ?? null,
         hashedPassword,
         id_rol,          // ✅ rol "Cliente" automático
-        created_by
+        actorId
       ]
     );
 
@@ -214,6 +251,9 @@ async function createClient(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error('Error al crear cliente:', err);
     return res.status(500).json({
       error: 'Error interno al crear cliente',
@@ -236,6 +276,8 @@ async function updateClient(req, res) {
     estado_observaciones
   } = req.body;
 
+  const actorId = req.user?.id_usuario;
+
   try {
     // 1️⃣ Validaciones
     if (Number.isNaN(idUsuario)) {
@@ -244,11 +286,11 @@ async function updateClient(req, res) {
       });
     }
 
-    if (!updated_by) {
-      return res.status(400).json({
-        error: 'updated_by es obligatorio',
-      });
+    if (!actorId) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
+
+    await requireClientAccess(pool, actorId, idUsuario);
 
     // 2️⃣ Verificar que el usuario exista y SEA CLIENTE
     const current = await pool.query(
@@ -306,7 +348,7 @@ async function updateClient(req, res) {
 
     // ✅ Auditoría SIEMPRE
     fields.push('updated_at = NOW()');
-    add('updated_by', updated_by);
+    add('updated_by', actorId);
 
     if (fields.length === 0) {
       return res.status(400).json({
@@ -339,6 +381,9 @@ async function updateClient(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error('Error al actualizar cliente:', err);
     return res.status(500).json({
       error: 'Error interno al actualizar cliente',
@@ -355,6 +400,8 @@ async function getClienteFull(req, res) {
         error: 'El id debe ser numérico',
       });
     }
+
+    await requireClientAccess(pool, req.user?.id_usuario, idUsuario);
 
     const result = await pool.query(
       `
@@ -596,6 +643,9 @@ async function getClienteFull(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error('Error al obtener cliente completo:', err);
     return res.status(500).json({
       error: 'Error interno',
@@ -623,16 +673,21 @@ async function createMipyme(req, res) {
     created_by,
   } = req.body;
 
+  const actorId = req.user?.id_usuario;
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
 
     // ✅ VALIDACIONES
-    if (!id_usuario || !created_by) {
-      return res.status(400).json({
-        error: 'id_usuario y created_by son obligatorios'
-      });
+    if (!id_usuario) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'id_usuario es obligatorio' });
+    }
+
+    if (!actorId) {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
 
     const exists = await client.query(
@@ -687,7 +742,7 @@ async function createMipyme(req, res) {
         ingresos ?? null,
         egresos ?? null,
         codigo_ciiu ?? null,
-        created_by
+        actorId
       ]
     );
 
@@ -710,6 +765,8 @@ async function createMipyme(req, res) {
       ]
     );
 
+    await linkAdvisorToMipyme(client, actorId, idMipyme);
+
     await client.query('COMMIT');
 
     return res.status(201).json({
@@ -719,6 +776,10 @@ async function createMipyme(req, res) {
 
   } catch (err) {
     await client.query('ROLLBACK');
+
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error('Error al crear mipyme:', err);
 
     return res.status(500).json({
@@ -757,6 +818,8 @@ async function updateMipyme(req, res) {
     updated_by,
   } = req.body;
 
+  const actorId = req.user?.id_usuario;
+
   try {
 
     if (Number.isNaN(idMipyme)) {
@@ -765,11 +828,11 @@ async function updateMipyme(req, res) {
       });
     }
 
-    if (!updated_by) {
-      return res.status(400).json({
-        error: 'updated_by es obligatorio',
-      });
+    if (!actorId) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
+
+    await requireMipymeAccess(pool, actorId, idMipyme);
 
     const currentResult = await pool.query(
       `
@@ -1032,7 +1095,7 @@ async function updateMipyme(req, res) {
 
     add(
       'updated_by',
-      updated_by
+      actorId
     );
 
     const result = await pool.query(
@@ -1056,6 +1119,9 @@ async function updateMipyme(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
 
     console.error(
       'Error al actualizar mipyme:',
@@ -1078,6 +1144,8 @@ async function getPreviewInfoClient(req, res) {
         error: 'El id debe ser numérico',
       });
     }
+
+    await requireClientAccess(pool, req.user?.id_usuario, idUsuario);
 
     const result = await pool.query(
       `
@@ -1292,6 +1360,9 @@ async function getPreviewInfoClient(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error('Error al obtener preview del cliente:', err);
     return res.status(500).json({
       error: 'Error interno',
@@ -1308,6 +1379,8 @@ async function getMipymeByUsuario(req, res) {
         error: 'El id debe ser numérico',
       });
     }
+
+    await requireClientAccess(pool, req.user?.id_usuario, idUsuario);
 
     const result = await pool.query(
       `
@@ -1349,6 +1422,9 @@ async function getMipymeByUsuario(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error('Error al obtener mipyme:', err);
 
     return res.status(500).json({
@@ -1366,6 +1442,8 @@ async function getActivosByUsuario(req, res) {
         error: 'El id debe ser numérico',
       });
     }
+
+    await requireClientAccess(pool, req.user?.id_usuario, idUsuario);
 
     const result = await pool.query(
       `
@@ -1419,6 +1497,9 @@ async function getActivosByUsuario(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error('Error al obtener activos:', err);
 
     return res.status(500).json({
@@ -1436,6 +1517,8 @@ async function getConsumosByUsuario(req, res) {
         error: 'El id debe ser numérico',
       });
     }
+
+    await requireClientAccess(pool, req.user?.id_usuario, idUsuario);
 
     const result = await pool.query(
       `
@@ -1493,6 +1576,9 @@ async function getConsumosByUsuario(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error('Error al obtener consumos:', err);
 
     return res.status(500).json({
@@ -1547,6 +1633,7 @@ async function createClientWithMipyme(req, res) {
     created_by,
   } = req.body;
 
+  const actorId = req.user?.id_usuario;
   const client = await pool.connect();
 
   // ✅ helper local para limpiar strings vacíos
@@ -1572,10 +1659,9 @@ async function createClientWithMipyme(req, res) {
       });
     }
 
-    if (!created_by) {
-      return res.status(400).json({
-        error: 'created_by es obligatorio',
-      });
+    if (!actorId) {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
 
     if (!isEmail(email)) {
@@ -1722,10 +1808,12 @@ async function createClientWithMipyme(req, res) {
         password_hash,
         id_rol,
         estado,
+        estado_acceso,
+        must_change_password,
         created_at,
         created_by
       )
-      VALUES ($1, $2, $3, $4, $5, $6, 'nuevo', NOW(), $7)
+      VALUES ($1, $2, $3, $4, $5, $6, 'nuevo', 'activo', TRUE, NOW(), $7)
       RETURNING *
       `,
       [
@@ -1735,7 +1823,7 @@ async function createClientWithMipyme(req, res) {
         clean(telefono),
         hashedPassword,
         idRolCliente,
-        created_by,
+        actorId,
       ]
     );
 
@@ -1788,7 +1876,7 @@ async function createClientWithMipyme(req, res) {
         estrato ?? null,
         tipo_persona ?? null,
         tipo_empresa ?? null,
-        created_by,
+        actorId,
       ]
     );
 
@@ -1803,6 +1891,8 @@ async function createClientWithMipyme(req, res) {
       [user.id_usuario, mipyme.id_mipyme, tipo_relacion || 'propietario']
     );
 
+    await linkAdvisorToMipyme(client, actorId, mipyme.id_mipyme);
+
     await client.query('COMMIT');
 
     return res.status(201).json({
@@ -1813,6 +1903,10 @@ async function createClientWithMipyme(req, res) {
 
   } catch (err) {
     await client.query('ROLLBACK');
+
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error(err);
 
     return res.status(500).json({
@@ -1838,6 +1932,8 @@ async function inactiveClient(req, res) {
         error: 'El id del cliente debe ser numérico',
       });
     }
+
+    await requireClientAccess(pool, updated_by, idUsuario);
 
     const exists = await pool.query(
       `
@@ -1885,6 +1981,9 @@ async function inactiveClient(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
 
     console.error(
       'Error al inactivar cliente:',
@@ -1956,11 +2055,20 @@ async function searchClientByNitOrDocumento(req, res) {
       });
     }
 
+    await requireMipymeAccess(
+      pool,
+      req.user?.id_usuario,
+      result.rows[0].id_mipyme,
+    );
+
     return res.status(200).json({
       cliente: result.rows[0]
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
 
     console.error(err);
 

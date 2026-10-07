@@ -15,7 +15,7 @@ const {
 
 // POST /api/activo
 router.post('/', requirePermissions(["Crear activo"]), createActivo);
-router.post('/upload', upload.single('image'), uploadImagenActivo);
+router.post('/upload', requirePermissions(["Editar activo"]), upload.single('image'), uploadImagenActivo);
 router.post('/analizar/:id', requirePermissions(["Analizar activo"]), analizarActivo);
 
 // GET /api/activo

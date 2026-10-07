@@ -15,12 +15,12 @@ const {
 } = require('../controllers/consumo.controller');
 
 // GET /api/roles
-router.get('/:id', getConsumoById);
+router.get('/:id', requirePermissions(["Obtener consumos"]), getConsumoById);
 
 // POST /api/roles
 router.post('/', requirePermissions(["Crear consumo"]), createConsumo);
-router.post('/upload', upload.single('image'), uploadImagenConsumo);
-router.post('/documento/upload', upload.single('documento'), uploadDocumentoConsumo);
+router.post('/upload', requirePermissions(["Editar consumo"]), upload.single('image'), uploadImagenConsumo);
+router.post('/documento/upload', requirePermissions(["Editar consumo"]), upload.single('documento'), uploadDocumentoConsumo);
 router.post('/analizar/:id', requirePermissions(["Analizar consumo"]) , analizarConsumo);
 
 

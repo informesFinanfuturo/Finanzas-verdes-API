@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const path = require('path');
 const fs = require('fs');
 const { askAIStructured, AIServiceError } = require('../services/iaService');
+const { requireMipymeAccess } = require('../utils/accessControl');
 
 // POST /api/roles
 async function createActivo(req, res) {
@@ -19,13 +20,19 @@ async function createActivo(req, res) {
     created_by,
   } = req.body;
 
+  const actorId = req.user?.id_usuario;
+
   try {
 
     // ✅ VALIDACIONES
-    if (!nombre || !tipo|| !id_mipyme || !created_by) {
+    if (!nombre || !tipo || !id_mipyme) {
       return res.status(400).json({
-        error: 'nombre, tipo, id_mipyme y created_by son obligatorios',
+        error: 'nombre, tipo e id_mipyme son obligatorios',
       });
+    }
+
+    if (!actorId) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
 
     // ✅ verificar mipyme
@@ -39,6 +46,8 @@ async function createActivo(req, res) {
         error: 'Mipyme no encontrada',
       });
     }
+
+    await requireMipymeAccess(pool, actorId, id_mipyme);
 
     // ✅ INSERT (con nuevas columnas)
     const result = await pool.query(
@@ -75,7 +84,7 @@ async function createActivo(req, res) {
         datos ?? null,
         estado_activo ?? 'activo',
         id_mipyme,
-        created_by
+        actorId
       ]
     );
 
@@ -85,6 +94,12 @@ async function createActivo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     console.error('Error al crear activo:', err);
 
     return res.status(500).json({
@@ -157,11 +172,23 @@ async function getActivoById(req, res) {
       });
     }
 
+    await requireMipymeAccess(
+      pool,
+      req.user?.id_usuario,
+      result.rows[0].id_mipyme,
+    );
+
     return res.status(200).json({
       activo: result.rows[0],
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     console.error('Error al obtener activo:', err);
 
     return res.status(500).json({
@@ -184,6 +211,8 @@ async function updateActivo(req, res) {
     cantidad
   } = req.body;
 
+  const actorId = req.user?.id_usuario;
+
   try {
 
     if (Number.isNaN(idActivo)) {
@@ -198,15 +227,13 @@ async function updateActivo(req, res) {
       });
     }
 
-    if (!updated_by) {
-      return res.status(400).json({
-        error: 'updated_by es obligatorio',
-      });
+    if (!actorId) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
 
     const exists = await pool.query(
       `
-      SELECT id_activo
+      SELECT id_activo, id_mipyme
       FROM activo
       WHERE id_activo = $1
       `,
@@ -218,6 +245,8 @@ async function updateActivo(req, res) {
         error: 'Activo no encontrado',
       });
     }
+
+    await requireMipymeAccess(pool, actorId, exists.rows[0].id_mipyme);
 
     const clean = (value) => {
 
@@ -289,7 +318,7 @@ async function updateActivo(req, res) {
 
     // ✅ auditoría
     fields.push('updated_at = NOW()');
-    add('updated_by', updated_by);
+    add('updated_by', actorId);
 
     const result = await pool.query(
       `
@@ -310,6 +339,12 @@ async function updateActivo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
 
     console.error(
       'Error al actualizar activo:',
@@ -323,10 +358,8 @@ async function updateActivo(req, res) {
 }
 
 async function uploadImagenActivo(req, res) {
-  const {
-    id_activo,
-    created_by
-  } = req.body;
+  const { id_activo } = req.body;
+  const actorId = req.user?.id_usuario;
 
   try {
     // 1️⃣ Validaciones
@@ -336,15 +369,17 @@ async function uploadImagenActivo(req, res) {
       });
     }
 
-    if (!id_activo || !created_by) {
-      return res.status(400).json({
-        error: 'id_activo y created_by son obligatorios',
-      });
+    if (!id_activo) {
+      return res.status(400).json({ error: 'id_activo es obligatorio' });
+    }
+
+    if (!actorId) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
 
     // 2️⃣ Verificar activo
     const activoExists = await pool.query(
-      'SELECT id_activo FROM activo WHERE id_activo = $1',
+      'SELECT id_activo, id_mipyme FROM activo WHERE id_activo = $1',
       [id_activo]
     );
 
@@ -353,6 +388,8 @@ async function uploadImagenActivo(req, res) {
         error: 'Activo no encontrado',
       });
     }
+
+    await requireMipymeAccess(pool, actorId, activoExists.rows[0].id_mipyme);
 
     // ✅ IMPORTANTE: multer ya guardó el archivo
     const file = req.file;
@@ -388,7 +425,7 @@ async function uploadImagenActivo(req, res) {
         extension,
         file.mimetype,               // ✅ tipo MIME
         `uploads/${file.filename}`, // ✅ ruta
-        created_by
+        actorId
       ]
     );
 
@@ -416,6 +453,12 @@ async function uploadImagenActivo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     console.error('Error al subir imagen:', err);
 
     return res.status(500).json({
@@ -435,9 +478,16 @@ async function deleteImagenActivo(req, res) {
       });
     }
 
-    // 2️⃣ Obtener archivo
+    // 2️⃣ Obtener archivo y activo asociado para validar acceso
     const archivoResult = await pool.query(
-      'SELECT * FROM archivo WHERE id_archivo = $1',
+      `
+      SELECT ar.*, a.id_mipyme
+      FROM archivo ar
+      INNER JOIN archivo_activo aa ON aa.id_archivo = ar.id_archivo
+      INNER JOIN activo a ON a.id_activo = aa.id_activo
+      WHERE ar.id_archivo = $1
+      LIMIT 1
+      `,
       [id_archivo]
     );
 
@@ -448,6 +498,8 @@ async function deleteImagenActivo(req, res) {
     }
 
     const archivo = archivoResult.rows[0];
+
+    await requireMipymeAccess(pool, req.user?.id_usuario, archivo.id_mipyme);
 
     // ✅ Ruta física
     const filePath = path.join(__dirname, '..', archivo.ubicacion);
@@ -475,6 +527,12 @@ async function deleteImagenActivo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     console.error('Error al eliminar imagen:', err);
 
     return res.status(500).json({
@@ -797,6 +855,8 @@ async function analizarActivo(req, res) {
     }
 
     const activo = activoResult.rows[0];
+
+    await requireMipymeAccess(client, req.user?.id_usuario, activo.id_mipyme);
 
     // ✅ 3. Obtener facturas de la misma mipyme (no eliminadas)
     const facturasResult = await client.query(
@@ -1271,6 +1331,12 @@ async function analizarActivo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     await client.query('ROLLBACK');
     console.error('Error analizando activo:', err);
 
@@ -1295,7 +1361,7 @@ async function analizarActivo(req, res) {
 
 async function deleteActivo(req, res) {
   const idActivo = Number(req.params.id);
-  const updatedBy = req.user?.id_usuario || req.body?.updated_by || null;
+  const updatedBy = req.user?.id_usuario || null;
 
   const client = await pool.connect();
 
@@ -1321,7 +1387,7 @@ async function deleteActivo(req, res) {
     // ✅ verificar activo
     const activoResult = await client.query(
       `
-      SELECT id_activo, estado
+      SELECT id_activo, estado, id_mipyme
       FROM activo
       WHERE id_activo = $1
       `,
@@ -1334,6 +1400,8 @@ async function deleteActivo(req, res) {
         error: 'Activo no encontrado',
       });
     }
+
+    await requireMipymeAccess(client, updatedBy, activoResult.rows[0].id_mipyme);
 
     if (String(activoResult.rows[0].estado || '').toLowerCase() === 'eliminado') {
       await client.query('ROLLBACK');
@@ -1418,6 +1486,12 @@ async function deleteActivo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     await client.query('ROLLBACK');
     console.error('Error al eliminar activo:', err);
 

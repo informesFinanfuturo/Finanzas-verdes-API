@@ -1,5 +1,6 @@
 const pool = require('../db');
 const { askAIStructured, AIServiceError } = require('../services/iaService');
+const { requireMipymeAccess } = require('../utils/accessControl');
 
 
 async function generarYSyncDiagnosticos(req, res) {
@@ -37,6 +38,8 @@ async function generarYSyncDiagnosticos(req, res) {
         error: 'Mipyme no encontrada',
       });
     }
+
+    await requireMipymeAccess(client, req.user.id_usuario, id_mipyme);
 
     // ✅ catálogo filtrado
     const catalogo = await obtenerCatalogoRelevante(client, activos);
@@ -221,6 +224,13 @@ async function generarYSyncDiagnosticos(req, res) {
           code: err.code,
           message_user: err.messageUser,
         },
+      });
+    }
+
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
       });
     }
 
@@ -3058,6 +3068,9 @@ async function getMisDiagnosticos(
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     console.error(
       'Error getMisDiagnosticos:',
       err
@@ -3238,6 +3251,12 @@ async function getAlternativasActivoDiagnostico(
 
     const activo =
       contextoResult.rows[0];
+
+    await requireMipymeAccess(
+      pool,
+      req.user?.id_usuario,
+      activo.id_mipyme,
+    );
 
     const metricasDiagnostico =
       activo.metricas_diagnostico &&
@@ -3579,6 +3598,9 @@ async function getAlternativasActivoDiagnostico(
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
 
     console.error(
       'Error obteniendo alternativas del activo:',
@@ -3689,6 +3711,12 @@ async function guardarSeleccionActivos(
 
     const diagnostico =
       diagnosticoResult.rows[0];
+
+    await requireMipymeAccess(
+      pool,
+      req.user?.id_usuario,
+      diagnostico.id_mipyme,
+    );
 
     /*
     * Métricas originales del diagnóstico.
@@ -4180,6 +4208,9 @@ async function guardarSeleccionActivos(
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
 
     console.error(
       'Error guardando selección del diagnóstico:',

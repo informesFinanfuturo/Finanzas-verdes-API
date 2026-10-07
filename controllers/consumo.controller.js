@@ -3,6 +3,7 @@ const pool = require('../db');
 const path = require('path');
 const fs = require('fs');
 const { askAIWithImages, askAIStructured } = require('../services/iaService');
+const { requireMipymeAccess } = require('../utils/accessControl');
 
 async function createConsumo(req, res) {
   const {
@@ -24,13 +25,21 @@ async function createConsumo(req, res) {
     created_by
   } = req.body;
 
+  const actorId = req.user?.id_usuario;
+
   try {
     // ✅ 1. Validación mínima
-    if (!tipo) {
+    if (!actorId) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
+    }
+
+    if (!tipo || !id_mipyme) {
       return res.status(400).json({
-        error: 'tipo es obligatorio',
+        error: 'tipo e id_mipyme son obligatorios',
       });
     }
+
+    await requireMipymeAccess(pool, actorId, id_mipyme);
 
     // ✅ 2. Construir JSON consumo
     let consumo = null;
@@ -98,8 +107,8 @@ async function createConsumo(req, res) {
         unidad ?? null,
         observaciones ?? null,
         estado ?? 'activo',
-        id_mipyme ?? null,
-        created_by ?? null
+        id_mipyme,
+        actorId
       ]
     );
 
@@ -110,6 +119,12 @@ async function createConsumo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     console.error('Error al crear consumo:', err);
 
     return res.status(500).json({
@@ -151,7 +166,7 @@ async function updateConsumo(req, res) {
     }
 
     const exists = await pool.query(
-      'SELECT id_consumo FROM consumo WHERE id_consumo = $1',
+      'SELECT id_consumo, id_mipyme FROM consumo WHERE id_consumo = $1',
       [idConsumo]
     );
 
@@ -160,6 +175,8 @@ async function updateConsumo(req, res) {
         error: 'Consumo no encontrado',
       });
     }
+
+    await requireMipymeAccess(pool, updated_by, exists.rows[0].id_mipyme);
 
     const fields = [];
     const values = [];
@@ -253,6 +270,12 @@ async function updateConsumo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     console.error('Error al actualizar consumo:', err);
 
     return res.status(500).json({
@@ -329,11 +352,23 @@ async function getConsumoById(req, res) {
       });
     }
 
+    await requireMipymeAccess(
+      pool,
+      req.user?.id_usuario,
+      result.rows[0].id_mipyme,
+    );
+
     return res.status(200).json({
       consumo: result.rows[0],
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     console.error('Error al obtener consumo:', err);
 
     return res.status(500).json({
@@ -343,10 +378,8 @@ async function getConsumoById(req, res) {
 }
 
 async function uploadImagenConsumo(req, res) {
-  const {
-    id_consumo,
-    created_by
-  } = req.body;
+  const { id_consumo } = req.body;
+  const actorId = req.user?.id_usuario;
 
   try {
     // 1️⃣ Validaciones
@@ -356,15 +389,17 @@ async function uploadImagenConsumo(req, res) {
       });
     }
 
-    if (!id_consumo || !created_by) {
-      return res.status(400).json({
-        error: 'id_consumo y created_by son obligatorios',
-      });
+    if (!id_consumo) {
+      return res.status(400).json({ error: 'id_consumo es obligatorio' });
+    }
+
+    if (!actorId) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
 
     // 2️⃣ Verificar consumo
     const consumoExists = await pool.query(
-      'SELECT id_consumo FROM consumo WHERE id_consumo = $1',
+      'SELECT id_consumo, id_mipyme FROM consumo WHERE id_consumo = $1',
       [id_consumo]
     );
 
@@ -373,6 +408,8 @@ async function uploadImagenConsumo(req, res) {
         error: 'consumo no encontrado',
       });
     }
+
+    await requireMipymeAccess(pool, actorId, consumoExists.rows[0].id_mipyme);
 
     // ✅ IMPORTANTE: multer ya guardó el archivo
     const file = req.file;
@@ -408,7 +445,7 @@ async function uploadImagenConsumo(req, res) {
         extension,
         file.mimetype,               // ✅ tipo MIME
         `uploads/${file.filename}`, // ✅ ruta
-        created_by
+        actorId
       ]
     );
 
@@ -436,6 +473,12 @@ async function uploadImagenConsumo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     console.error('Error al subir imagen:', err);
 
     return res.status(500).json({
@@ -446,10 +489,8 @@ async function uploadImagenConsumo(req, res) {
 
 async function uploadDocumentoConsumo(req, res) {
 
-  const {
-    id_consumo,
-    created_by
-  } = req.body;
+  const { id_consumo } = req.body;
+  const actorId = req.user?.id_usuario;
 
   try {
 
@@ -459,16 +500,18 @@ async function uploadDocumentoConsumo(req, res) {
       });
     }
 
-    if (!id_consumo || !created_by) {
-      return res.status(400).json({
-        error: 'id_consumo y created_by son obligatorios',
-      });
+    if (!id_consumo) {
+      return res.status(400).json({ error: 'id_consumo es obligatorio' });
+    }
+
+    if (!actorId) {
+      return res.status(401).json({ error: 'Usuario no autenticado' });
     }
 
     const consumoExists =
       await pool.query(
         `
-        SELECT id_consumo
+        SELECT id_consumo, id_mipyme
         FROM consumo
         WHERE id_consumo = $1
         `,
@@ -482,6 +525,8 @@ async function uploadDocumentoConsumo(req, res) {
         error: 'Consumo no encontrado',
       });
     }
+
+    await requireMipymeAccess(pool, actorId, consumoExists.rows[0].id_mipyme);
 
     const file = req.file;
 
@@ -587,6 +632,12 @@ async function uploadDocumentoConsumo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
 
     console.error(
       'Error al subir documento:',
@@ -617,9 +668,14 @@ async function deleteArchivoConsumo(req, res) {
     const archivoResult =
       await pool.query(
         `
-        SELECT *
-        FROM archivo
-        WHERE id_archivo = $1
+        SELECT ar.*, c.id_mipyme
+        FROM archivo ar
+        INNER JOIN consumo_archivo ca
+          ON ca.id_archivo = ar.id_archivo
+        INNER JOIN consumo c
+          ON c.id_consumo = ca.id_consumo
+        WHERE ar.id_archivo = $1
+        LIMIT 1
         `,
         [id_archivo]
       );
@@ -635,6 +691,8 @@ async function deleteArchivoConsumo(req, res) {
 
     const archivo =
       archivoResult.rows[0];
+
+    await requireMipymeAccess(pool, req.user?.id_usuario, archivo.id_mipyme);
 
     const filePath =
       path.join(
@@ -671,6 +729,12 @@ async function deleteArchivoConsumo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
 
     console.error(
       'Error al eliminar archivo:',
@@ -756,6 +820,8 @@ async function analizarConsumo(req, res) {
     }
 
     const consumoActual = consumoResult.rows[0];
+
+    await requireMipymeAccess(client, req.user?.id_usuario, consumoActual.id_mipyme);
 
     // ✅ 3. Preparar imágenes para IA
     const archivos =
@@ -1060,6 +1126,12 @@ const documentPaths = archivos
       imagenes_enviadas: imagePaths.length,
     });
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     await client.query('ROLLBACK');
     console.error('Error analizando consumo:', err);
 
@@ -1096,7 +1168,7 @@ async function deleteConsumo(req, res) {
     }
 
     const consumoResult = await client.query(
-      `SELECT id_consumo FROM consumo WHERE id_consumo = $1`,
+      `SELECT id_consumo, id_mipyme FROM consumo WHERE id_consumo = $1`,
       [idConsumo]
     );
 
@@ -1105,6 +1177,8 @@ async function deleteConsumo(req, res) {
         error: 'Consumo no encontrado',
       });
     }
+
+    await requireMipymeAccess(client, updated_by, consumoResult.rows[0].id_mipyme);
 
     // ✅ resto igual...
 
@@ -1128,6 +1202,12 @@ async function deleteConsumo(req, res) {
     });
 
   } catch (err) {
+    if (err?.statusCode) {
+      return res.status(err.statusCode).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
     await client.query('ROLLBACK');
     console.error('Error eliminando consumo:', err);
 

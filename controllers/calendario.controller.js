@@ -3,6 +3,19 @@ const pool = require('../db');
 const bcrypt = require('bcrypt');
 const axios = require('axios');
 
+
+function parseFutureDateTime(value) {
+  if (!value) return null;
+
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) {
+    return null;
+  }
+
+  return parsed;
+}
+
 async function createCalendario(req, res) {
 
   const {
@@ -34,6 +47,13 @@ async function createCalendario(req, res) {
       return res.status(400).json({
         error:
           'fecha_hora es obligatoria'
+      });
+    }
+
+    if (!parseFutureDateTime(fecha_hora)) {
+      return res.status(400).json({
+        error:
+          'La fecha y hora de la visita deben estar en el futuro'
       });
     }
 
@@ -721,6 +741,24 @@ async function updateCalendario(
     direccion,
     descripcion,
   } = req.body;
+
+  if (!Number.isInteger(idCalendario) || idCalendario <= 0) {
+    return res.status(400).json({
+      error: 'El id del calendario debe ser numérico'
+    });
+  }
+
+  if (!String(titulo ?? '').trim()) {
+    return res.status(400).json({
+      error: 'titulo es obligatorio'
+    });
+  }
+
+  if (!parseFutureDateTime(fecha_hora)) {
+    return res.status(400).json({
+      error: 'La fecha y hora de la visita deben estar en el futuro'
+    });
+  }
 
   const client =
     await pool.connect();

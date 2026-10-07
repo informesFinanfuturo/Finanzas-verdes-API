@@ -862,6 +862,23 @@ async function agendarProspecto(
   }
 
 
+  const fechaHora =
+    new Date(fecha_hora);
+
+
+  if (
+    Number.isNaN(fechaHora.getTime()) ||
+    fechaHora.getTime() <= Date.now()
+  ) {
+
+    return res.status(400).json({
+      error:
+        'La fecha y hora de la visita deben estar en el futuro',
+    });
+
+  }
+
+
   const advisorClient =
     await pool.connect();
 
@@ -2271,15 +2288,15 @@ async function convertirProspecto(
         id_asesor,
         id_mipyme
       )
-      VALUES (
+      SELECT
         $1,
         $2
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM asesor_mipyme
+        WHERE id_asesor = $1
+          AND id_mipyme = $2
       )
-      ON CONFLICT (
-        id_asesor,
-        id_mipyme
-      )
-      DO NOTHING
       `,
       [
         advisor.id_asesor,
