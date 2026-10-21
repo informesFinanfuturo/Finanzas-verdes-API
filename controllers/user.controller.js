@@ -4,46 +4,384 @@ const pool = require('../db');
 const bcrypt = require('bcrypt');
 
 // GET /api/user
+
 async function getUsers(req, res) {
   try {
-    const result = await pool.query(
-      `
+    const page = Number(req.query.page ?? 1);
+    const limit = Number(req.query.limit ?? 20);
+
+    const search = String(
+      req.query.search ?? ''
+    ).trim();
+
+    const estadoAcceso = String(
+      req.query.estado_acceso ?? 'todos'
+    ).toLowerCase();
+
+    const estadoProceso = String(
+      req.query.estado ?? 'todos'
+    ).toLowerCase();
+
+    const perfil = String(
+      req.query.perfil ?? 'todos'
+    ).toLowerCase();
+
+    const orden = String(
+      req.query.orden ?? 'recientes'
+    ).toLowerCase();
+
+    const idRolRaw = req.query.id_rol;
+
+    // Opciones permitidas por el frontend.
+    const accessOptions = [
+      'todos',
+      'activo',
+      'inactivo',
+      'bloqueado'
+    ];
+
+    const processOptions = [
+      'todos',
+      'nuevo',
+      'activo',
+      'pospuesto',
+      'inactivo'
+    ];
+
+    const profileOptions = [
+      'todos',
+      'completos',
+      'incompletos'
+    ];
+
+    const sortOptions = {
+      recientes:
+        'u.created_at DESC, u.id_usuario DESC',
+
+      antiguos:
+        'u.created_at ASC, u.id_usuario ASC',
+
+      nombre_asc:
+        'u.nombre_usuario ASC, u.id_usuario ASC',
+
+      nombre_desc:
+        'u.nombre_usuario DESC, u.id_usuario DESC',
+
+      ultimo_acceso:
+        'u.last_login_at DESC NULLS LAST, u.id_usuario DESC'
+    };
+
+    // Validaciones para evitar filtros no admitidos.
+    if (
+      !Number.isSafeInteger(page) ||
+      page < 1 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 100 ||
+      search.length > 150 ||
+      !accessOptions.includes(estadoAcceso) ||
+      !processOptions.includes(estadoProceso) ||
+      !profileOptions.includes(perfil) ||
+      !Object.prototype.hasOwnProperty.call(
+        sortOptions,
+        orden
+      )
+    ) {
+      return res.status(400).json({
+        error: 'Filtros de usuarios invalidos'
+      });
+    }
+
+    let idRol = null;
+
+    if (
+      idRolRaw !== undefined &&
+      idRolRaw !== ''
+    ) {
+      idRol = Number(idRolRaw);
+
+      if (
+        !Number.isSafeInteger(idRol) ||
+        idRol < 1
+      ) {
+        return res.status(400).json({
+          error: 'Rol invalido'
+        });
+      }
+    }
+
+    // Un asesor está incompleto cuando todavía
+    // no tiene registro en la tabla asesor.
+    const incompletoSql = `(
+      lower(coalesce(r.nombre_rol, '')) = 'asesor'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.asesor a
+        WHERE a.id_usuario = u.id_usuario
+      )
+    )`;
+
+    const fromSql = `
+      FROM public.usuario u
+      LEFT JOIN public.rol r
+        ON r.id_rol = u.id_rol
+    `;
+
+    // Base de los filtros de la tabla.
+    const condiciones = [
+      "u.estado IS DISTINCT FROM 'eliminado'"
+    ];
+
+    const parametros = [];
+
+    function agregarParametro(valor) {
+      parametros.push(valor);
+
+      return '$' + parametros.length;
+    }
+
+    if (search) {
+      const p = agregarParametro(
+        '%' + search + '%'
+      );
+
+      condiciones.push(`
+        (
+          u.nombre_usuario ILIKE ${p}
+          OR u.email ILIKE ${p}
+          OR u.documento ILIKE ${p}
+        )
+      `);
+    }
+
+    if (estadoAcceso !== 'todos') {
+      const p = agregarParametro(
+        estadoAcceso
+      );
+
+      condiciones.push(`
+        lower(u.estado_acceso) = ${p}
+      `);
+    }
+
+    if (estadoProceso !== 'todos') {
+      const p = agregarParametro(
+        estadoProceso
+      );
+
+      condiciones.push(`
+        lower(u.estado) = ${p}
+      `);
+    }
+
+    if (idRol !== null) {
+      const p = agregarParametro(idRol);
+
+      condiciones.push(`
+        u.id_rol = ${p}
+      `);
+    }
+
+    if (perfil === 'incompletos') {
+      condiciones.push(incompletoSql);
+    }
+
+    if (perfil === 'completos') {
+      condiciones.push(
+        `NOT ${incompletoSql}`
+      );
+    }
+
+    const filtroSql = `
+      WHERE ${condiciones.join(' AND ')}
+    `;
+
+    // Estadísticas de toda la base,
+    // NO solamente de la página visible.
+    const summarySql = `
+      SELECT
+        COUNT(*)::int AS total,
+
+        COUNT(*) FILTER (
+          WHERE lower(u.estado_acceso) = 'activo'
+        )::int AS activos,
+
+        COUNT(*) FILTER (
+          WHERE lower(u.estado_acceso) = 'inactivo'
+        )::int AS inactivos,
+
+        COUNT(*) FILTER (
+          WHERE lower(u.estado_acceso) = 'bloqueado'
+        )::int AS bloqueados,
+
+        COUNT(*) FILTER (
+          WHERE ${incompletoSql}
+        )::int AS incompletos,
+
+        COUNT(*) FILTER (
+          WHERE r.id_rol IS NULL
+        )::int AS sin_rol,
+
+        COUNT(*) FILTER (
+          WHERE u.last_login_at IS NULL
+        )::int AS sin_primer_ingreso,
+
+        COUNT(*) FILTER (
+          WHERE u.locked_until > now()
+        )::int AS bloqueos_temporales,
+
+        COUNT(*) FILTER (
+          WHERE u.must_change_password = true
+        )::int AS cambios_password_pendientes
+
+      ${fromSql}
+
+      WHERE u.estado IS DISTINCT FROM 'eliminado'
+    `;
+
+    // Distribución global de usuarios por rol.
+    const rolesSql = `
+      SELECT
+        COALESCE(
+          r.nombre_rol,
+          'Sin rol'
+        ) AS nombre_rol,
+
+        COUNT(*)::int AS total
+
+      ${fromSql}
+
+      WHERE u.estado IS DISTINCT FROM 'eliminado'
+
+      GROUP BY r.nombre_rol
+
+      ORDER BY total DESC, nombre_rol
+    `;
+
+    // Número de registros que cumplen los filtros.
+    const countSql = `
+      SELECT COUNT(*)::int AS total
+
+      ${fromSql}
+
+      ${filtroSql}
+    `;
+
+    const limitParam =
+      '$' + (parametros.length + 1);
+
+    const offsetParam =
+      '$' + (parametros.length + 2);
+
+    // Usuarios de la página solicitada.
+    const listSql = `
       SELECT
         u.id_usuario,
         u.nombre_usuario,
         u.email,
         u.documento,
         u.telefono,
+        u.id_rol,
+
         r.nombre_rol,
-        r.id_rol,
+
         u.estado,
+        u.estado_acceso,
         u.created_at,
+        u.last_login_at,
+        u.locked_until,
+        u.must_change_password,
 
         CASE
-          WHEN r.nombre_rol = 'Asesor' AND a.id_usuario IS NOT NULL THEN true
-          WHEN r.nombre_rol = 'Asesor' AND a.id_usuario IS NULL THEN false
+          WHEN ${incompletoSql}
+          THEN false
           ELSE true
         END AS "usuarioCompleto"
 
-      FROM usuario u
-      LEFT JOIN rol r ON r.id_rol = u.id_rol
-      LEFT JOIN asesor a ON a.id_usuario = u.id_usuario
-      WHERE u.estado != 'inactivo'
-      ORDER BY u.created_at DESC
-      `
+      ${fromSql}
+
+      ${filtroSql}
+
+      ORDER BY ${sortOptions[orden]}
+
+      LIMIT ${limitParam}
+      OFFSET ${offsetParam}
+    `;
+
+    // Consultar estadísticas y registros.
+    const [
+      summaryResult,
+      rolesResult,
+      countResult,
+      listResult
+    ] = await Promise.all([
+      pool.query(summarySql),
+
+      pool.query(rolesSql),
+
+      pool.query(
+        countSql,
+        parametros
+      ),
+
+      pool.query(
+        listSql,
+        [
+          ...parametros,
+          limit,
+          (page - 1) * limit
+        ]
+      )
+    ]);
+
+    const summary = {
+      ...summaryResult.rows[0],
+
+      por_rol: Object.fromEntries(
+        rolesResult.rows.map(
+          row => [
+            row.nombre_rol,
+            Number(row.total)
+          ]
+        )
+      )
+    };
+
+    const total = Number(
+      countResult.rows[0].total
+    );
+
+    const totalPages = Math.max(
+      1,
+      Math.ceil(total / limit)
     );
 
     return res.status(200).json({
-      users: result.rows,
+      users: listResult.rows,
+
+      summary,
+
+      pagination: {
+        page,
+        limit,
+        total,
+        total_pages: totalPages
+      }
     });
 
   } catch (err) {
-    console.error('Error al listar usuarios:', err);
+    console.error(
+      'Error al listar usuarios:',
+      err
+    );
+
     return res.status(500).json({
-      error: 'Error interno al listar usuarios',
+      error:
+        'No fue posible consultar usuarios e indicadores'
     });
   }
 }
+
 
 async function getUsersByRol(req, res) {
   const idRol = Number(req.params.id);

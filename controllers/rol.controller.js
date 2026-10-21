@@ -28,8 +28,19 @@ async function getRols(req, res) {
       ORDER BY r.created_at DESC
     `);
 
+    
+    const permisosResult = await pool.query(`
+      SELECT COUNT(*)::int AS total_permisos
+      FROM public.permiso
+    `);
+
     return res.status(200).json({
       rols: result.rows,
+
+      summary: {
+        total_permisos:
+          permisosResult.rows[0].total_permisos
+      }
     });
 
   } catch (err) {

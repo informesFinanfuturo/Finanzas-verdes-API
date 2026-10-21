@@ -21,7 +21,7 @@ async function loginUser(req, res) {
         u.id_usuario,
         u.documento,
         u.nombre_usuario,
-        u.email,
+        u.email,  
         u.telefono,
         u.password_hash,
         u.estado,
@@ -46,6 +46,18 @@ async function loginUser(req, res) {
     if (!isMatch) {
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
+
+        
+    // Registrar la fecha del inicio de sesión exitoso.
+    await pool.query(
+      `
+      UPDATE public.usuario
+      SET last_login_at = NOW()
+      WHERE id_usuario = $1
+      `,
+      [user.id_usuario]
+    );
+
 
     // 4️⃣ Crear TOKEN (JWT)
     const token = jwt.sign(

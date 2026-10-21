@@ -18,6 +18,9 @@ const catalogoRoutes = require('./routes/catalogo.routes');
 const diagnosticoRoutes = require('./routes/diagnostico.routes');
 const planTrabajoRoutes = require('./routes/plan.trabajo.routes');
 const calendarioRoutes = require('./routes/calendario.routes');
+const fveRoutes = require('./routes/fve.routes');
+const ambientalRoutes = require('./routes/ambiental.routes');
+const prospectoRoutes = require('./routes/prospecto.routes');
 
 const app = express();
 app.use(cors());
@@ -43,6 +46,9 @@ app.use('/api/catalogo', auth, catalogoRoutes);
 app.use('/api/diagnostico', auth, diagnosticoRoutes);
 app.use('/api/plantrabajo', auth, planTrabajoRoutes);
 app.use('/api/calendario', auth, calendarioRoutes);
+app.use('/api/fve', auth, fveRoutes);
+app.use('/api/ambiental', auth, ambientalRoutes);
+app.use('/api/prospecto', auth, prospectoRoutes);
 
 app.use(
   '/uploads',

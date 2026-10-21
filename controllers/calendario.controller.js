@@ -302,6 +302,14 @@ async function crearEventoTeams({
   fechaHora,
   attendees = [],
 }) {
+  const powerAutomateUrl =
+    process.env.POWER_AUTOMATE_TEAMS_CREATE_URL;
+
+  if (!powerAutomateUrl) {
+    throw new Error(
+      'POWER_AUTOMATE_TEAMS_CREATE_URL no está configurada'
+    );
+  }
 
   const inicio = new Date(fechaHora);
 
@@ -310,21 +318,14 @@ async function crearEventoTeams({
   );
 
   const response = await axios.post(
-
-    'https://default23cc1a1c724d49179f5da22ac77e48.79.environment.api.powerplatform.com/powerautomate/automations/direct/cu/31/workflows/f0f0c6e8f62f4e82b873d188bf896105/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=TLtF2klg1vIRoGqkc4-5ArEjH04WlqRlF3EMx9taqno',
-
+    powerAutomateUrl,
     {
       subject: titulo,
       body: descripcion || '',
-      start: formatDateForPowerAutomate(
-        inicio
-      ),
-      end: formatDateForPowerAutomate(
-        fin
-      ),
+      start: formatDateForPowerAutomate(inicio),
+      end: formatDateForPowerAutomate(fin),
       requiredAttendees: attendees,
     }
-
   );
 
   return response.data;
@@ -484,19 +485,23 @@ async function cancelarCalendario(
 async function cancelarEventoTeams(
   idTeams
 ) {
+  const powerAutomateUrl =
+    process.env.POWER_AUTOMATE_TEAMS_CANCEL_URL;
+
+  if (!powerAutomateUrl) {
+    throw new Error(
+      'POWER_AUTOMATE_TEAMS_CANCEL_URL no está configurada'
+    );
+  }
 
   const response = await axios.post(
-
-    'https://default23cc1a1c724d49179f5da22ac77e48.79.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/07/workflows/5c90fa1fe7714d08b05afa414a53b91a/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=wxgRSzerSfUrHtZAGMQ-jDOoRaFy8vNbygLXFAAoak4',
-
+    powerAutomateUrl,
     {
       id_teams: idTeams
     }
-
   );
 
   return response.data;
-
 }
 
 async function actualizarEventoTeams({
@@ -506,6 +511,14 @@ async function actualizarEventoTeams({
   fechaHora,
   attendees = [],
 }) {
+  const powerAutomateUrl =
+    process.env.POWER_AUTOMATE_TEAMS_UPDATE_URL;
+
+  if (!powerAutomateUrl) {
+    throw new Error(
+      'POWER_AUTOMATE_TEAMS_UPDATE_URL no está configurada'
+    );
+  }
 
   const inicio =
     new Date(fechaHora);
@@ -518,35 +531,25 @@ async function actualizarEventoTeams({
 
   const response =
     await axios.put(
-
-      'https://default23cc1a1c724d49179f5da22ac77e48.79.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/01/workflows/20e26a1b3d45470cbfd2917e0d61ae5c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=tZIEWIy9aIZeXceZlmij4s1Cfc4rN8dcUcptlRH_cVo',
-
+      powerAutomateUrl,
       {
-            id_teams: idTeams,
-
-            subject: titulo,
-
-            body:
-                descripcion || '',
-
-            start:
-                formatDateForPowerAutomate(
-                inicio
-                ),
-
-            end:
-                formatDateForPowerAutomate(
-                fin
-                ),
-
-            requiredAttendees:
-                attendees,
-        }
-
+        id_teams: idTeams,
+        subject: titulo,
+        body: descripcion || '',
+        start:
+          formatDateForPowerAutomate(
+            inicio
+          ),
+        end:
+          formatDateForPowerAutomate(
+            fin
+          ),
+        requiredAttendees:
+          attendees,
+      }
     );
 
   return response.data;
-
 }
 
 async function updateCalendario(
