@@ -597,9 +597,222 @@ async function obtenerHistorial(req, res) {
 }
 
 
+async function agendarProspecto(req, res) {
+  const idUsuario = Number(req.user?.id_usuario);
+  const idProspecto = Number(req.params.idProspecto);
+
+  if (!Number.isSafeInteger(idUsuario) || idUsuario <= 0) {
+    return res.status(401).json({
+      error: 'Sesion no valida'
+    });
+  }
+
+  if (!Number.isSafeInteger(idProspecto) || idProspecto <= 0) {
+    return res.status(400).json({
+      error: 'Prospecto invalido'
+    });
+  }
+
+  const titulo = typeof req.body?.titulo === 'string'
+    ? req.body.titulo.trim()
+    : '';
+
+  const descripcion = typeof req.body?.descripcion === 'string'
+    ? req.body.descripcion.trim()
+    : '';
+
+  const direccion = typeof req.body?.direccion === 'string'
+    ? req.body.direccion.trim()
+    : '';
+
+  const fechaTexto = req.body?.fecha_hora;
+
+  // Exigir zona horaria para evitar citas desplazadas.
+  const formatoFecha =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/i;
+
+  const fecha = typeof fechaTexto === 'string' &&
+    formatoFecha.test(fechaTexto)
+      ? new Date(fechaTexto)
+      : null;
+
+  if (
+    !titulo ||
+    titulo.length > 150 ||
+    descripcion.length > 2000 ||
+    direccion.length > 250 ||
+    !fecha ||
+    Number.isNaN(fecha.getTime()) ||
+    fecha.getTime() <= Date.now()
+  ) {
+    return res.status(400).json({
+      error: 'Revise el titulo, la fecha futura y los campos de la visita'
+    });
+  }
+
+  let db;
+
+  try {
+    db = await pool.connect();
+    await db.query('BEGIN');
+
+    // Bloquear el registro durante esta transaccion:
+    // evita crear dos citas simultaneas para el prospecto.
+    const consulta = await db.query(`
+      SELECT
+        id_prospecto,
+        id_asesor_usuario,
+        estado,
+        direccion_negocio
+      FROM public.prospecto
+      WHERE id_prospecto = $1
+      FOR UPDATE
+    `, [idProspecto]);
+
+    if (
+      !consulta.rowCount ||
+      Number(consulta.rows[0].id_asesor_usuario) !== idUsuario
+    ) {
+      await db.query('ROLLBACK');
+
+      return res.status(404).json({
+        error: 'Prospecto no encontrado o no asignado'
+      });
+    }
+
+    const prospecto = consulta.rows[0];
+
+    if (!['nuevo', 'en_gestion'].includes(prospecto.estado)) {
+      await db.query('ROLLBACK');
+
+      return res.status(409).json({
+        error:
+          'Este prospecto no admite una nueva cita en su estado actual'
+      });
+    }
+
+    // Crear una cita real en la tabla calendario.
+    const nuevaCita = await db.query(`
+      INSERT INTO public.calendario (
+        titulo,
+        estado,
+        fecha_hora,
+        direccion,
+        descripcion,
+        created_at,
+        created_by
+      )
+      VALUES (
+        $1, 'activo', $2, $3, $4, NOW(), $5
+      )
+      RETURNING
+        id_calendario,
+        titulo,
+        estado,
+        fecha_hora,
+        direccion,
+        descripcion
+    `, [
+      titulo,
+      fecha.toISOString(),
+      direccion || prospecto.direccion_negocio || null,
+      descripcion || null,
+      idUsuario
+    ]);
+
+    const calendario = nuevaCita.rows[0];
+
+    // El asesor participa en la cita.
+    // No se crea una cuenta para el prospecto.
+    await db.query(`
+      INSERT INTO public.usuario_calendario (
+        id_usuario,
+        id_calendario
+      )
+      VALUES ($1, $2)
+    `, [
+      idUsuario,
+      calendario.id_calendario
+    ]);
+
+    // Relacionar cita y prospecto.
+    await db.query(`
+      INSERT INTO public.prospecto_calendario (
+        id_prospecto,
+        id_calendario
+      )
+      VALUES ($1, $2)
+    `, [
+      idProspecto,
+      calendario.id_calendario
+    ]);
+
+    // Actualizar estado del proceso comercial.
+    await db.query(`
+      UPDATE public.prospecto
+      SET
+        estado = 'agendado',
+        updated_at = NOW()
+      WHERE id_prospecto = $1
+    `, [idProspecto]);
+
+    // Guardar auditoria en la misma transaccion.
+    await db.query(`
+      INSERT INTO public.prospecto_evento (
+        id_prospecto,
+        tipo_evento,
+        detalle,
+        id_usuario
+      )
+      VALUES (
+        $1, 'agendamiento', $2::jsonb, $3
+      )
+    `, [
+      idProspecto,
+      JSON.stringify({
+        id_calendario: calendario.id_calendario,
+        titulo: calendario.titulo,
+        fecha_hora: calendario.fecha_hora,
+        estado_anterior: prospecto.estado,
+        estado_nuevo: 'agendado'
+      }),
+      idUsuario
+    ]);
+
+    await db.query('COMMIT');
+
+    return res.status(201).json({
+      message: 'Visita agendada correctamente',
+      calendario,
+      prospecto: {
+        id_prospecto: idProspecto,
+        estado: 'agendado'
+      }
+    });
+
+  } catch (error) {
+    if (db) {
+      try {
+        await db.query('ROLLBACK');
+      } catch (_) {}
+    }
+
+    console.error('Error al agendar prospecto:', error);
+
+    return res.status(500).json({
+      error: 'No fue posible agendar la visita'
+    });
+  } finally {
+    if (db) db.release();
+  }
+}
+
+
 module.exports = {
   registrarManual,
   listarProspectos,
   actualizarDecision,
-  obtenerHistorial
+  obtenerHistorial,
+  agendarProspecto
 };
+

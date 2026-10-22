@@ -54,4 +54,11 @@ router.get(
   gestion.obtenerHistorial
 );
 
+
+router.post(
+  '/:idProspecto/agendar',
+  requirePermissions(['Gestionar prospectos']),
+  gestion.agendarProspecto
+);
+
 module.exports = router;

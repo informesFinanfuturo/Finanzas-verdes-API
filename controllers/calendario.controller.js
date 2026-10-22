@@ -203,6 +203,81 @@ async function createCalendario(req, res) {
 
 }
 
+
+async function obtenerCitasProspectos(
+  idUsuario,
+  fechaInicio = null,
+  fechaFin = null
+) {
+  const porRango = fechaInicio != null && fechaFin != null;
+
+  const filtroFecha = porRango
+    ? 'DATE(c.fecha_hora) BETWEEN $2::date AND $3::date'
+    : 'DATE(c.fecha_hora) = CURRENT_DATE';
+
+  const parametros = porRango
+    ? [idUsuario, fechaInicio, fechaFin]
+    : [idUsuario];
+
+  const resultado = await pool.query(`
+    SELECT
+      NULL::integer AS id_usuario,
+
+      CONCAT_WS(
+        ' ',
+        p.nombres,
+        NULLIF(p.apellidos, '')
+      ) AS nombre_usuario,
+
+      p.correo AS email,
+      p.documento,
+      p.telefono,
+
+      'Prospecto'::text AS nombre_rol,
+      NULL::integer AS id_rol,
+
+      COALESCE(
+        NULLIF(p.nombre_negocio, ''),
+        'Prospecto sin negocio registrado'
+      ) AS nombre_mipyme,
+
+      p.municipio,
+      NULL::text AS tipo_empresa,
+
+      c.id_calendario,
+      c.titulo,
+      c.fecha_hora,
+      c.descripcion,
+      c.direccion,
+
+      p.estado,
+      p.created_at,
+      p.id_prospecto,
+
+      'prospecto'::text AS tipo_entidad
+
+    FROM public.calendario c
+
+    JOIN public.prospecto_calendario pc
+      ON pc.id_calendario = c.id_calendario
+
+    JOIN public.prospecto p
+      ON p.id_prospecto = pc.id_prospecto
+
+    JOIN public.usuario_calendario uc
+      ON uc.id_calendario = c.id_calendario
+
+    WHERE uc.id_usuario = $1
+      AND p.id_asesor_usuario = $1
+      AND c.estado = 'activo'
+      AND ${filtroFecha}
+
+    ORDER BY c.fecha_hora ASC
+  `, parametros);
+
+  return resultado.rows;
+}
+
 async function getClientsWithMyCalendarToday(req, res) {
 
   const idUsuario = req.user?.id_usuario;
@@ -276,9 +351,21 @@ async function getClientsWithMyCalendarToday(req, res) {
       [idUsuario]
     );
 
+    
+    const prospectos = await obtenerCitasProspectos(idUsuario);
+
+    const agendaCompleta = [
+      ...result.rows,
+      ...prospectos
+    ].sort(
+      (a, b) =>
+        new Date(a.fecha_hora) - new Date(b.fecha_hora)
+    );
+
     return res.status(200).json({
-      clients: result.rows,
+      clients: agendaCompleta
     });
+
 
   } catch (err) {
 
@@ -390,6 +477,33 @@ async function cancelarCalendario(
 
     }
 
+    
+    const vinculoProspecto = await client.query(`
+      SELECT
+        p.id_prospecto,
+        p.id_asesor_usuario
+      FROM public.prospecto_calendario pc
+      JOIN public.prospecto p
+        ON p.id_prospecto = pc.id_prospecto
+      WHERE pc.id_calendario = $1
+      LIMIT 1
+    `, [idCalendario]);
+
+    // En citas de prospectos, solo el asesor
+    // responsable puede cancelarlas.
+    if (
+      vinculoProspecto.rowCount &&
+      Number(
+        vinculoProspecto.rows[0].id_asesor_usuario
+      ) !== Number(req.user?.id_usuario)
+    ) {
+      await client.query('ROLLBACK');
+
+      return res.status(403).json({
+        error: 'No puede cancelar una cita de otro asesor'
+      });
+    }
+
     const calendario = calendarioResult.rows[0];
 
     // ✅ cancelar Teams
@@ -449,6 +563,47 @@ async function cancelarCalendario(
         req.user.id_usuario
       ]
     );
+
+    
+    if (vinculoProspecto.rowCount) {
+      const idProspecto =
+        vinculoProspecto.rows[0].id_prospecto;
+
+      const actualizado = await client.query(`
+        UPDATE public.prospecto
+        SET
+          estado = 'en_gestion',
+          updated_at = NOW()
+        WHERE id_prospecto = $1
+          AND estado = 'agendado'
+        RETURNING id_prospecto
+      `, [idProspecto]);
+
+      if (actualizado.rowCount) {
+        await client.query(`
+          INSERT INTO public.prospecto_evento (
+            id_prospecto,
+            tipo_evento,
+            detalle,
+            id_usuario
+          )
+          VALUES (
+            $1,
+            'cancelacion_visita',
+            $2::jsonb,
+            $3
+          )
+        `, [
+          idProspecto,
+          JSON.stringify({
+            id_calendario: idCalendario,
+            estado_anterior: 'agendado',
+            estado_nuevo: 'en_gestion'
+          }),
+          req.user.id_usuario
+        ]);
+      }
+    }
 
     await client.query(
       'COMMIT'
@@ -820,20 +975,26 @@ async function getClientsWithMyCalendarRange(
         ]
       );
 
-    console.log(result.rows)
+    
+    const prospectos = await obtenerCitasProspectos(
+      idUsuario,
+      fecha_inicio,
+      fecha_fin
+    );
+
+    const agendaCompleta = [
+      ...result.rows,
+      ...prospectos
+    ].sort(
+      (a, b) =>
+        new Date(a.fecha_hora) - new Date(b.fecha_hora)
+    );
 
     return res.status(200).json({
-
       fecha_inicio,
-
       fecha_fin,
-
-      total:
-        result.rows.length,
-
-      clients:
-        result.rows,
-
+      total: agendaCompleta.length,
+      clients: agendaCompleta
     });
 
   } catch (err) {
