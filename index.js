@@ -62,7 +62,9 @@ const {
   iniciarScheduler
 } = require('./services/scheduler');
  
-iniciarScheduler();
+if (process.env.DISABLE_SCHEDULER !== 'true') {
+  iniciarScheduler();
+}
 
 app.listen(PORT, () => {
   console.log(`Servidor finanzas verdes escuchando en http://localhost:${PORT}`);
