@@ -4,6 +4,11 @@ const jwt = require('jsonwebtoken');
 const path = require('path');
 const fs = require('fs');
 const { askAIStructured, AIServiceError } = require('../services/iaService');
+const { clasificarActivo, camposExistentes } = require('../services/fveClasificacionActivo');
+const { normalizarSugerenciasIA } = require('../services/fveSugerenciasIA');
+const { accesoMipyme } = require('../services/accesoMipyme');
+const { validarPerfilUso } = require('../services/fveHorariosUso');
+const { error } = require('console');
 
 // POST /api/roles
 async function createActivo(req, res) {
@@ -16,28 +21,65 @@ async function createActivo(req, res) {
     datos,
     estado_activo,
     id_mipyme,
-    created_by,
   } = req.body;
+
+  const created_by = req.user?.id_usuario;
+
+  if(!created_by) {
+    return res.status(401).json(
+      {
+        error: 'Usuario no autenticado'
+      }
+    )
+  }
 
   try {
 
     // ✅ VALIDACIONES
-    if (!nombre || !tipo|| !id_mipyme || !created_by) {
+    if (!nombre || !tipo|| !id_mipyme) {
       return res.status(400).json({
-        error: 'nombre, tipo, id_mipyme y created_by son obligatorios',
+        error: 'nombre, tipo y id_mipyme son obligatorios',
       });
+    }
+
+    const idMipyme = Number(id_mipyme);
+
+    if (!Number.isSafeInteger(idMipyme) || idMipyme <= 0) {
+      return res.status(400).json({
+        error: 'El identificador de la MIPYME debe ser un entero positivo',
+      });
+    }
+
+    let datosGuardados = datos;
+    if (datos && typeof datos === 'object' && !Array.isArray(datos) &&
+        Object.prototype.hasOwnProperty.call(datos, 'fve_perfil_uso')) {
+      let perfil;
+      try {
+        perfil = validarPerfilUso(datos.fve_perfil_uso, tipo);
+      } catch (e) {
+        return res.status(400).json({error: e.message});
+      }
+      datosGuardados = {...datos, fve_perfil_uso: perfil};
     }
 
     // ✅ verificar mipyme
     const exists = await pool.query(
       'SELECT id_mipyme FROM mipyme WHERE id_mipyme = $1',
-      [id_mipyme]
+      [idMipyme]
     );
 
     if (exists.rows.length === 0) {
       return res.status(404).json({
         error: 'Mipyme no encontrada',
       });
+    }
+
+    const accessMipyme = await accesoMipyme(pool, idMipyme, created_by);
+
+    if(!accessMipyme) {
+      return res.status(403).json({
+        error: "Mipyme sin acceso",
+      })
     }
 
     // ✅ INSERT (con nuevas columnas)
@@ -72,9 +114,9 @@ async function createActivo(req, res) {
         marca,                  // ✅ obligatorio
         modelo ?? null,         // ✅ opcional
         descripcion ?? null,
-        datos ?? null,
+        datosGuardados ?? null,
         estado_activo ?? 'activo',
-        id_mipyme,
+        idMipyme,
         created_by
       ]
     );
@@ -181,7 +223,8 @@ async function updateActivo(req, res) {
     modelo,
     estado_activo,
     updated_by,
-    cantidad
+    cantidad,
+    perfil_uso
   } = req.body;
 
   try {
@@ -206,7 +249,7 @@ async function updateActivo(req, res) {
 
     const exists = await pool.query(
       `
-      SELECT id_activo
+      SELECT id_activo, tipo
       FROM activo
       WHERE id_activo = $1
       `,
@@ -278,6 +321,26 @@ async function updateActivo(req, res) {
 
     if (estado_activo !== undefined) {
       add('estado', clean(estado_activo));
+    }
+
+    // Cambia solo el perfil de uso; conserva IA, evidencia y datos técnicos existentes.
+    if (perfil_uso !== undefined) {
+      let perfilNormalizado;
+      try {
+        perfilNormalizado = validarPerfilUso(perfil_uso, tipo || exists.rows[0].tipo);
+      } catch (e) {
+        return res.status(400).json({error: e.message});
+      }
+      fields.push(`datos = jsonb_set(COALESCE(datos::jsonb, '{}'::jsonb), '{fve_perfil_uso}', $${index}::jsonb, true)::json`);
+      values.push(JSON.stringify(perfilNormalizado));
+      index++;
+    }
+
+    // Si cambia el tipo, descartar el perfil anterior sin tocar otras claves de datos.
+    if (tipo !== undefined && perfil_uso === undefined) {
+      fields.push(`datos = CASE WHEN tipo IS DISTINCT FROM $${index} THEN (COALESCE(datos::jsonb, '{}'::jsonb) - 'fve_perfil_uso')::json ELSE datos END`);
+      values.push(tipo);
+      index++;
     }
 
     // ✅ validar que venga al menos un cambio
@@ -797,6 +860,7 @@ async function analizarActivo(req, res) {
     }
 
     const activo = activoResult.rows[0];
+    const camposFveIA = camposExistentes(clasificarActivo(activo.tipo, activo.nombre));
 
     // ✅ 3. Obtener facturas de la misma mipyme (no eliminadas)
     const facturasResult = await client.query(
@@ -827,10 +891,38 @@ async function analizarActivo(req, res) {
     const facturas = facturasResult.rows;
 
     // ✅ 4. Preparar imágenes para IA
-    const imagePaths = (activo.imagenes || [])
+    // La clonacion de PostgreSQL conserva metadatos, no archivos de uploads.
+    const rutasImagenesRegistradas = (activo.imagenes || [])
       .map((img) => img?.ubicacion)
       .filter(Boolean)
       .map((ubicacion) => path.join(__dirname, '..', ubicacion));
+    const imagePaths = rutasImagenesRegistradas.filter((ruta) => {
+      try { return fs.statSync(ruta).isFile(); } catch (_) { return false; }
+    });
+    const imagenesNoDisponibles = rutasImagenesRegistradas.length - imagePaths.length;
+
+    if (rutasImagenesRegistradas.length > 0 && imagePaths.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({
+        error: 'Las imagenes asociadas no estan disponibles en el servidor local',
+        ai_error: {
+          code: 'ACTIVO_IMAGENES_AUSENTES',
+          message_user: 'Las fotografias figuran en el registro del activo, pero los archivos no estan disponibles en este servidor. Recupera las fotos originales en api/uploads o actualiza los adjuntos antes de analizar con IA.',
+          cantidad_no_disponible: imagenesNoDisponibles,
+        },
+      });
+    }
+
+    if (!String(process.env.GEMINI_API_KEY || '').trim()) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({
+        error: 'Gemini no esta configurado en la API local',
+        ai_error: {
+          code: 'GEMINI_KEY_MISSING',
+          message_user: 'Falta configurar GEMINI_API_KEY en el archivo api/.env del servidor local. Reinicia la API despues de agregarla.',
+        },
+      });
+    }
 
     // ✅ 5. Validación mínima de contexto
     const hasContext =
@@ -935,6 +1027,7 @@ async function analizarActivo(req, res) {
         - Incluir las fuentes utilizadas.
       `,
       contextData: {
+        campos_tecnicos_fve_equipo_actual: camposFveIA,
         activo : {
           "nombre": activo.nombre,
           "tipo": activo.tipo,
@@ -947,6 +1040,9 @@ async function analizarActivo(req, res) {
       },
  
       outputSchemaExample: {
+        "datos_tecnicos_finanzas_verdes": Object.fromEntries(
+          camposFveIA.map(c => [c.codigo, { valor: null, fuente: null, evidencia: null }])
+        ),
         "marca": "String | null",
         "modelo": "String | null",
         "observacion_ia": "String | null",
@@ -962,6 +1058,22 @@ async function analizarActivo(req, res) {
       },
  
       rules: [
+        `DATOS TECNICOS PARA FINANZAS VERDES (EQUIPO ACTUAL, NO EQUIPO A COMPRAR):
+        Completa datos_tecnicos_finanzas_verdes usando SOLO los codigos de
+        campos_tecnicos_fve_equipo_actual provistos en contextData.
+        Devuelve por cada campo disponible {"valor": numero_o_texto,
+        "fuente":"placa|etiqueta|fotografia|manual|ficha_tecnica|fabricante|documento|contexto",
+        "evidencia":"descripcion concreta de donde proviene el valor"}.
+        Cuando no haya evidencia suficiente deja valor, fuente y evidencia en null.
+        Para estos campos PROHIBIDO usar promedios, modelos similares, inferencias,
+        equivalencias de potencia a energia, valores agregados de facturas de otros equipos
+        o estimaciones que otras secciones del informe si puedan presentar.
+        No confundas potencia (W) con consumo (kWh/mes), ni capacidad con consumo.
+        El anio requiere dato documental, no apariencia o antiguedad aproximada.
+        Horas/dia, dias/anio, ciclos/semana, minutos/dia y descargas/dia
+        SOLO pueden venir de registros de uso o contexto aportado por el usuario.
+        El numero en el JSON debe ser numero sin unidades, en la unidad de la ficha.
+        Se trata de SUGERENCIAS para revision humana, NO elegibilidad.`,
         `
         REGLAS GENERALES
  
@@ -1197,10 +1309,7 @@ async function analizarActivo(req, res) {
     // ✅ 9. Conservar lo ya registrado y solo completar faltantes
     const finalNombre = hasValue(activo.nombre) ? activo.nombre : iaNombre;
 
-    const finalTipo =
-      hasValue(iaTipo)
-        ? iaTipo
-        : activo.tipo;
+    const finalTipo = hasValue(activo.tipo) ? activo.tipo : iaTipo;
 
     const finalMarca =
       hasValue(iaMarca)
@@ -1219,7 +1328,15 @@ async function analizarActivo(req, res) {
       ? iaObservacion
       : null;
 
-    const finalDatos = iaDatosLimpios;
+    // Propuestas de IA separadas de los valores aprobados por el asesor.
+    const sugerenciasVerdesIA = normalizarSugerenciasIA(
+      datosIA?.datos_tecnicos_finanzas_verdes, camposFveIA
+    );
+    const finalDatos = {
+      ...datosExistentesLimpios,
+      ...iaDatosLimpios,
+      fve_sugerencias_ia: sugerenciasVerdesIA,
+    };
 
     // ✅ 10. Guardar columnas + datos dinámicos
     const updateResult = await client.query(
@@ -1259,6 +1376,7 @@ async function analizarActivo(req, res) {
       },
       facturas_en_contexto: facturas.length,
       imagenes_enviadas: imagePaths.length,
+      imagenes_no_disponibles: imagenesNoDisponibles,
       analisis_ia: datosIA,
       datos_finales_guardados: {
         nombre: finalNombre,
@@ -1274,7 +1392,22 @@ async function analizarActivo(req, res) {
     await client.query('ROLLBACK');
     console.error('Error analizando activo:', err);
 
-    if (err instanceof AIServiceError) {
+    // FVE_JSON_ACTIVO_LECTURA_V1: respuesta breve para el frontend sin exponer el JSON completo.
+    if (err && err.code === 'AI_JSON_INVALIDO') {
+      console.warn('[FVE-IA-JSON]', JSON.stringify({
+        etapa: 'ANALISIS_ACTIVO_RECHAZADO', id_activo: idActivo,
+        motivo: 'JSON_INVALIDO', accion: 'TRANSACCION_REVERTIDA',
+      }));
+      return res.status(422).json({
+        error: 'No se pudo completar el análisis de la fotografía',
+        ai_error: {
+          code: 'AI_JSON_INVALIDO',
+          message_user: 'La IA respondió con un formato que no se pudo interpretar. No se guardaron cambios de este análisis. Intenta nuevamente.',
+        },
+      });
+    }
+
+    if (typeof AIServiceError === 'function' && err instanceof AIServiceError) {
       return res.status(422).json({
         error: 'La IA no pudo procesar correctamente el activo',
         ai_error: {

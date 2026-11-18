@@ -48,6 +48,7 @@ async function getUsers(req, res) {
 // POST /api/user
 
 async function createUser(req, res) {
+  const created_by = req.user?.id_usuario;
   const {
     documento,
     nombre_usuario,
@@ -55,7 +56,7 @@ async function createUser(req, res) {
     telefono,
     password,
     id_rol,        // ✅ NUEVO
-    created_by     // 🔹 por ahora opcional
+    // Se ignora created_by enviado desde Flutter.
   } = req.body;
 
   try {
@@ -72,6 +73,14 @@ async function createUser(req, res) {
       });
     }
     
+
+    const validRole = await pool.query(
+      "SELECT id_rol FROM public.rol WHERE id_rol = $1 AND lower(estado) = 'activo'",
+      [id_rol]
+    );
+    if (!validRole.rowCount) {
+      return res.status(400).json({ error: 'Rol inexistente o inactivo' });
+    }
 
     // 2️⃣ Verificar email duplicado
     const existing = await pool.query(
@@ -143,6 +152,7 @@ async function createUser(req, res) {
 
 // PUT /api/user/:id
 async function updateAsesor(req, res) {
+  const updated_by = req.user?.id_usuario;
   const idUsuario = Number(req.params.id);
 
   const {
@@ -157,8 +167,7 @@ async function updateAsesor(req, res) {
     nombre_cargo,
     sede,
 
-    // auditoría
-    updated_by,
+    // updated_by es el usuario autenticado, nunca el body.
   } = req.body;
 
   try {

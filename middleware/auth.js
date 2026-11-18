@@ -1,36 +1,39 @@
+'use strict';
 const jwt = require('jsonwebtoken');
+const pool = require('../db');
 
-function auth(req, res, next) {
-  const authHeader = req.headers.authorization;
-
-  // 1️⃣ Verificar header
-  if (!authHeader) {
-    return res.status(401).json({
-      error: 'Token requerido',
-    });
+async function auth(req, res, next) {
+  const match = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization || ''));
+  if (!match) return res.status(401).json({ error: 'Token Bearer requerido' });
+  let decoded;
+  try { decoded = jwt.verify(match[1], process.env.JWT_SECRET); }
+  catch (_) { return res.status(401).json({ error: 'Token invalido o expirado' }); }
+  const id = Number(decoded?.id_usuario);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return res.status(401).json({ error: 'Identidad invalida' });
   }
-
-  // 2️⃣ Extraer token
-  const token = authHeader.split(' ')[1];
-  if (!token) {
-    return res.status(401).json({
-      error: 'Token mal formado',
-    });
-  }
-
-  // 3️⃣ Verificar token
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // ✅ Usuario disponible en TODOS los endpoints protegidos
-    req.user = decoded;
-
+    // Los claims de rol del JWT pueden estar desactualizados. Solo se confia
+    // en los atributos del usuario/rol actuales en PostgreSQL.
+    const r = await pool.query(`
+      SELECT u.id_usuario, u.id_rol, u.estado, u.estado_acceso,
+             u.locked_until, ro.nombre_rol, ro.estado AS estado_rol
+      FROM public.usuario u JOIN public.rol ro ON ro.id_rol = u.id_rol
+      WHERE u.id_usuario = $1
+    `, [id]);
+    const u = r.rows[0];
+    if (!u || String(u.estado).toLowerCase() !== 'activo' ||
+        String(u.estado_acceso).toLowerCase() !== 'activo' ||
+        String(u.estado_rol).toLowerCase() !== 'activo' ||
+        (u.locked_until && new Date(u.locked_until).getTime() > Date.now())) {
+      return res.status(401).json({ error: 'Cuenta sin acceso vigente' });
+    }
+    req.user = { ...decoded, id_usuario: u.id_usuario,
+      id_rol: u.id_rol, nombre_rol: u.nombre_rol };
     next();
   } catch (err) {
-    return res.status(401).json({
-      error: 'Token inválido o expirado',
-    });
+    console.error('Error comprobando estado de la sesion', err);
+    return res.status(503).json({ error: 'No se pudo validar la sesion' });
   }
 }
-
 module.exports = auth;

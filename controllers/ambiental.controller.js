@@ -3,6 +3,7 @@
 
 const pool = require('../db');
 const { accesoMipyme } = require('../services/accesoMipyme');
+const { validarJustificaciones } = require('../services/fveJustificacionesAmbientales');
 
 const numero = x => {
   const n = Number(x);
@@ -368,10 +369,9 @@ async function validarDatos(db, datos, version) {
     ? bloques.reduce(
         (s, k) => s + datos.puntajes[k], 0
       ) / 4
-    : null;
-
-  return {
+    : null;  return {
     indice,
+    justificaciones: validarJustificaciones(datos.justificaciones_bloques),
     observacion: datos.observacion_general ?? ''
   };
 }
@@ -499,14 +499,14 @@ async function guardarEvaluacion(req, res) {
     }
 
     const parametros = [
-      json(datos.respuestas),
-      json(datos.puntajes),
+      json(datos.respuestas),      json(datos.puntajes),
       validacion.observacion,
       validacion.indice,
       datos.finalizar,
       inventario === null ? null : json(inventario),
-      idUsuario
-    ];
+      idUsuario,
+      json(validacion.justificaciones)
+];
 
     let resultado;
 
@@ -515,8 +515,8 @@ async function guardarEvaluacion(req, res) {
         UPDATE public.fve_visita_ambiental
         SET
           respuestas = $1::jsonb,
-          puntajes = $2::jsonb,
-          observacion_general = $3,
+          puntajes = $2::jsonb,          observacion_general = $3,
+          justificaciones_bloques = $8::jsonb,
           indice_ad07 = $4,
 
           estado = CASE
@@ -541,9 +541,7 @@ async function guardarEvaluacion(req, res) {
           END,
 
           updated_by = $7,
-          updated_at = now()
-
-        WHERE id_visita = $8
+          updated_at = now()        WHERE id_visita = $9
 
         RETURNING *, id_visita AS id_evaluacion
       `, [...parametros, idEvaluacion]);
@@ -559,13 +557,12 @@ async function guardarEvaluacion(req, res) {
           observacion_general,
           indice_ad07,
           estado,
-          inventario_snapshot,
-          finalized_at,
-          created_by
+          inventario_snapshot,          finalized_at,
+          created_by,
+          justificaciones_bloques
         )
-        VALUES (
-          $8,
-          $9,
+        VALUES (          $9,
+          $10,
           (now() AT TIME ZONE 'America/Bogota')::date,
           $1::jsonb,
           $2::jsonb,
@@ -582,9 +579,8 @@ async function guardarEvaluacion(req, res) {
           CASE
             WHEN $5 THEN now()
             ELSE NULL
-          END,
-
-          $7
+          END,          $7,
+          $8::jsonb
         )
 
         RETURNING *, id_visita AS id_evaluacion

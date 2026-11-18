@@ -1,4 +1,3 @@
-
 'use strict';
 
 const pool = require('../db');
@@ -44,6 +43,7 @@ async function registrarManual(req, res) {
     nombre_negocio: limpio(
       req.body?.nombre_negocio, 180
     ),
+    departamento: limpio(req.body?.departamento, 120),
     municipio: limpio(req.body?.municipio, 120),
     direccion_negocio: limpio(
       req.body?.direccion_negocio, 250
@@ -53,6 +53,8 @@ async function registrarManual(req, res) {
   if (
     Object.values(campos).some(v => v === null) ||
     !/^\d{5,15}$/.test(campos.documento) ||
+    (campos.telefono && !/^\d{7,15}$/.test(campos.telefono)) ||
+    (campos.municipio && !campos.departamento) ||
     !campos.nombres ||
     (!campos.telefono && !campos.correo) ||
     (
@@ -64,8 +66,8 @@ async function registrarManual(req, res) {
   ) {
     return res.status(400).json({
       error:
-        'Revise documento (5 a 15 digitos), nombres, ' +
-        'contacto y longitudes de los campos.'
+        'Revise documento (5 a 15 digitos), telefono (7 a 15 digitos), ' +
+        'correo, ubicacion y longitudes de los campos.'
     });
   }
 
@@ -115,6 +117,7 @@ async function registrarManual(req, res) {
         telefono,
         correo,
         nombre_negocio,
+        departamento,
         municipio,
         direccion_negocio,
         origen_datos,
@@ -123,8 +126,8 @@ async function registrarManual(req, res) {
       )
       VALUES (
         $1, $2, $3, $4, $5,
-        $6, $7, $8,
-        'declarado', 'nuevo', $9
+        $6, $7, $8, $9,
+        'declarado', 'nuevo', $10
       )
       ON CONFLICT (documento) DO NOTHING
       RETURNING *
@@ -135,6 +138,7 @@ async function registrarManual(req, res) {
       campos.telefono || null,
       campos.correo || null,
       campos.nombre_negocio || null,
+      campos.departamento || null,
       campos.municipio || null,
       campos.direccion_negocio || null,
       idUsuario
@@ -278,6 +282,7 @@ async function listarProspectos(req, res) {
           p.telefono,
           p.correo,
           p.nombre_negocio,
+          p.departamento,
           p.municipio,
           p.direccion_negocio,
           p.origen_datos,
@@ -815,4 +820,3 @@ module.exports = {
   obtenerHistorial,
   agendarProspecto
 };
-

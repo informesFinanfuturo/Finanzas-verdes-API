@@ -1,5 +1,6 @@
 const pool = require('../db');
 const { askAIStructured, AIServiceError } = require('../services/iaService');
+const { corregirMetricasNoVerificables } = require('../services/diagnosticoMetricasConservadoras');
 
 
 async function generarYSyncDiagnosticos(req, res) {
@@ -38,8 +39,47 @@ async function generarYSyncDiagnosticos(req, res) {
       });
     }
 
+    // Identidad de activos verificada contra el inventario de ESTA empresa,
+    // antes de enviar datos al modelo de IA.
+    const { accesoMipyme } = require('../services/accesoMipyme');
+    if (!await accesoMipyme(client,id_mipyme,req.user.id_usuario)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({error:'Sin acceso a la empresa'});
+    }
+    if (!Array.isArray(activos) || activos.length > 100) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({error:'La lista de activos no es valida.'});
+    }
+    const idsRecibidos = activos.map(a => Number(a?.id_activo));
+    if (idsRecibidos.some(n => !Number.isSafeInteger(n) || n <= 0)
+       || new Set(idsRecibidos).size !== idsRecibidos.length) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({error:'Hay activos sin identificador valido o duplicados. Actualiza el inventario antes de generar el diagnostico.'});
+    }
+    const verificados = await client.query(`SELECT id_activo,nombre,tipo,marca,modelo
+      FROM public.activo WHERE id_mipyme=$1 AND id_activo=ANY($2::int[])
+      AND estado IS DISTINCT FROM 'eliminado'`,[id_mipyme,idsRecibidos]);
+    if (verificados.rowCount !== idsRecibidos.length) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({error:'Un activo no pertenece al inventario vigente de esta empresa. Actualiza la vista antes de generar el diagnostico.'});
+    }
+    const reales = new Map(verificados.rows.map(a=>[Number(a.id_activo),a]));
+    // Referencias aproximadas de IA: exclusivamente desde inventario servidor,
+    // y etiquetadas; nunca se convierten en caracterizacion verificada.
+    const referenciasR = await client.query(`SELECT id_activo,datos FROM public.activo
+      WHERE id_mipyme=$1 AND id_activo=ANY($2::int[])`,[id_mipyme,idsRecibidos]);
+    const referenciasIA = new Map(referenciasR.rows.map(a => [Number(a.id_activo),
+      a.datos?.fve_estimaciones_ia || null]));
+    const activosVerificados = activos.map(a => ({...a,
+      id_activo: Number(a.id_activo),
+      nombre: reales.get(Number(a.id_activo)).nombre,
+      tipo: reales.get(Number(a.id_activo)).tipo,
+      marca: reales.get(Number(a.id_activo)).marca,
+      modelo: reales.get(Number(a.id_activo)).modelo,
+    }));
+
     // ✅ catálogo filtrado
-    const catalogo = await obtenerCatalogoRelevante(client, activos);
+    const catalogo = await obtenerCatalogoRelevante(client, activosVerificados);
 
     console.log(
       "Productos enviados IA:",
@@ -103,7 +143,7 @@ async function generarYSyncDiagnosticos(req, res) {
 
     const contextoIA = {
       empresa,
-      activos,
+      activos: activosVerificados,
       facturas,
       catalogo,
       costo_unitario_energia: costoUnitarioEnergia,
@@ -111,6 +151,47 @@ async function generarYSyncDiagnosticos(req, res) {
     };
 
     const diagnosticoIA = await generarDiagnosticoConIA(contextoIA);
+    // FVE_IDENTIDAD_DIAGNOSTICO_V1: restituir el identificador SOLO cuando coincide con un activo
+    // real en el contexto ya verificado de esta empresa. Sin alterar el prompt.
+    const { resolver: resolverIdActivoDiagnostico } = require('../services/diagnosticoIdentidadActivos');
+    const activosDiagnosticoIdentidad = Array.isArray(diagnosticoIA.metricas?.activos)
+      ? diagnosticoIA.metricas.activos : [];
+    for (const sugerido of activosDiagnosticoIdentidad) {
+      const hallazgo = resolverIdActivoDiagnostico(sugerido, activosVerificados);
+      sugerido.id_activo = hallazgo.id;
+      if (!hallazgo.id) {
+        console.warn('[FVE] Activo de diagnostico sin identificador unico:',
+          sugerido.nombre_activo, hallazgo.causa);
+      }
+    }
+    // FVE_ALTERNATIVA_TRAZABLE_V1: conservar evidencia exacta del catalogo en metricas JSON.
+    // No alterar prompts, ni interpretar sugerencias como eleccion del asesor.
+    diagnosticoIA.metricas = {
+      ...(diagnosticoIA.metricas || {}),
+      evidencia_catalogo: Array.isArray(diagnosticoIA.evidencia_catalogo)
+        ? diagnosticoIA.evidencia_catalogo : [],
+    };
+    // Escenarios hipoteticos por IA, separados de indicadores verificados.
+    const { escenarioEstimado } = require('../services/fveEstimacionesIA');
+    const refsPorActivo = new Map(activosVerificados.map(a => [Number(a.id_activo),
+      referenciasIA.get(Number(a.id_activo))]));
+    for (const a of (diagnosticoIA.metricas.activos || [])) {
+      if (!a || !a.metricas || !Number.isSafeInteger(Number(a.id_activo))) continue;
+      const ref = refsPorActivo.get(Number(a.id_activo));
+      if (ref?.campos && Object.keys(ref.campos).length) {
+        a.metricas.fve_referencias_tecnicas_ia = ref.campos;
+      }
+      const escenario = escenarioEstimado(a, ref, costoUnitarioEnergia);
+      if (escenario) a.metricas.fve_escenario_estimado = escenario;
+    }
+    diagnosticoIA.metricas.contiene_estimaciones_ia =
+      (diagnosticoIA.metricas.activos || []).some(a =>
+        Boolean(a.metricas?.fve_escenario_estimado) ||
+        Boolean(Object.keys(a.metricas?.fve_referencias_tecnicas_ia || {}).length));
+    // FVE_METRICAS_CONSERVADORAS_GENERAR_V1: no guardar ceros ficticios.
+    diagnosticoIA.metricas = corregirMetricasNoVerificables(
+      diagnosticoIA.metricas || {}, { costoUnitarioEnergia, costoUnitarioAgua }
+    );
 
     // ✅ verificar si ya existe uno
     // const existente = await client.query(
@@ -1478,6 +1559,12 @@ async function construirDiagnosticosCompletos(
 
       
 
+      // FVE_METRICAS_CONSERVADORAS_V1
+      // La ausencia de consumos comparables no constituye ahorro de $0.
+      corregirMetricasNoVerificables(metricas, {
+        costoUnitarioEnergia,
+        costoUnitarioAgua,
+      });
       diagnostico.metricas =
         metricas;
   }

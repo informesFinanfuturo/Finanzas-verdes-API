@@ -1,9 +1,9 @@
 // index.js
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const auth = require('./middleware/auth');
 const path = require('path');
-require('dotenv').config();
 const rolesRoutes = require('./routes/rol.routes');
 const userRoutes = require('./routes/user.routes');
 const servicesRoutes = require('./routes/services.routes');
@@ -19,6 +19,9 @@ const diagnosticoRoutes = require('./routes/diagnostico.routes');
 const planTrabajoRoutes = require('./routes/plan.trabajo.routes');
 const calendarioRoutes = require('./routes/calendario.routes');
 const fveRoutes = require('./routes/fve.routes');
+const fveIntegralRoutes = require('./routes/fve.integral.routes');
+const fveInventarioRoutes = require('./routes/fve.inventario.routes');
+const fveEvaluacionRoutes = require('./routes/fve.evaluacion.routes');
 const ambientalRoutes = require('./routes/ambiental.routes');
 const prospectoRoutes = require('./routes/prospecto.routes');
 
@@ -39,6 +42,7 @@ app.use('/api/services', servicesRoutes);
 app.use('/api/permission', auth, permissionRoutes);
 app.use('/api/client', auth, clientRoutes);
 app.use('/api/asesor', auth, asesorRoutes);
+app.use('/api/uploads', auth, require('./routes/archivoSeguro.routes'));
 app.use('/api/activo', auth, activoRoutes);
 app.use('/api/consumo', auth, consumoRoutes);
 app.use('/api/proveedor', auth, proveedorRoutes);
@@ -47,6 +51,9 @@ app.use('/api/diagnostico', auth, diagnosticoRoutes);
 app.use('/api/plantrabajo', auth, planTrabajoRoutes);
 app.use('/api/calendario', auth, calendarioRoutes);
 app.use('/api/fve', auth, fveRoutes);
+app.use('/api/fve', auth, fveIntegralRoutes);
+app.use('/api/fve', auth, fveInventarioRoutes);
+app.use('/api/fve', auth, fveEvaluacionRoutes);
 app.use('/api/ambiental', auth, ambientalRoutes);
 app.use('/api/prospecto', auth, prospectoRoutes);
 

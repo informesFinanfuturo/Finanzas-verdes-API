@@ -32,7 +32,17 @@ router.get('/:id', requirePermissions(["Obtener cliente"]), getClienteFull);
 // POST /api/client
 router.post('/', requirePermissions(["Crear cliente"]), createClient);
 router.post('/mipyme', requirePermissions(["Crear mipyme"]), createMipyme);
-router.post('/client-mipyme', requirePermissions(["Crear mipyme", "Crear cliente"]), createClientWithMipyme);
+// PARCHE_PROSPECTO_ALTA_DIRECTA_V1
+// El asesor registra un prospecto y lo convierte; el alta directa se reserva a Administracion.
+function soloAltaDirectaAdministrativa(req, res, next) {
+  const rol = String(req.user?.nombre_rol || '').toLowerCase();
+  if (rol !== 'administrador' && rol !== 'super administrador') {
+    return res.status(403).json({ error: 'Use el flujo Prospectos -> Convertir en cliente' });
+  }
+  next();
+}
+router.post('/client-mipyme', requirePermissions(["Crear mipyme", "Crear cliente"]),
+  soloAltaDirectaAdministrativa, createClientWithMipyme);
 
 // PUT /api/user
 router.patch('/:id', requirePermissions(["Editar cliente"]), updateClient);

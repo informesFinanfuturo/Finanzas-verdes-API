@@ -12,11 +12,16 @@ const {
   analizarActivo,
   deleteActivo,
 } = require('../controllers/activo.controller');
+const estimacionesIA = require('../controllers/activo.estimaciones.controller');
 
 // POST /api/activo
 router.post('/', requirePermissions(["Crear activo"]), createActivo);
 router.post('/upload', upload.single('image'), uploadImagenActivo);
 router.post('/analizar/:id', requirePermissions(["Analizar activo"]), analizarActivo);
+
+// Consulta y busqueda web voluntaria del asesor.
+router.get('/:id/estimaciones', requirePermissions(["Obtener activo"]), estimacionesIA.estado);
+router.post('/:id/estimaciones/investigar', requirePermissions(["Analizar activo"]), estimacionesIA.investigarActivo);
 
 // GET /api/activo
 router.get('/:id', requirePermissions(["Obtener activo"]), getActivoById);

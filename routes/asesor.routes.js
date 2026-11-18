@@ -1,6 +1,7 @@
 // routes/user.routes.js
 const express = require('express');
 const router = express.Router();
+const requireAdministrator = require('../middleware/requireAdministrator');
 const requirePermissions = require('../middleware/requirePermissions');
 const {
   getUsers,
@@ -12,9 +13,9 @@ const {
 router.get('/', requirePermissions(["Obtener usuarios"]), getUsers);
 
 // POST /api/user
-router.post('/', requirePermissions(["Crear usuario"]), createUser);
+router.post('/', requireAdministrator, createUser);
 
 // PUT /api/user
-router.patch('/:id', requirePermissions(["Editar usuario"]), updateAsesor);
+router.patch('/:id', requireAdministrator, updateAsesor);
 
 module.exports = router;

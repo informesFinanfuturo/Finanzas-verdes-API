@@ -3,6 +3,7 @@ const pool = require('../db');
 const path = require('path');
 const fs = require('fs');
 const { askAIWithImages, askAIStructured } = require('../services/iaService');
+const { normalizarImporteCOP } = require('../services/fveImporteCOP');
 
 async function createConsumo(req, res) {
   const {
@@ -803,6 +804,18 @@ const documentPaths = archivos
     )
   );
 
+    // La IA documental no debe ejecutarse si no recibio ninguna factura.
+    if (imagePaths.length === 0 && documentPaths.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({
+        error: 'La factura no tiene un adjunto compatible para analizar',
+        ai_error: {
+          code: 'FVE_IA_FACTURA_SIN_ADJUNTOS',
+          message_user: 'Adjunta la factura en PDF o como imagen JPG, PNG o WEBP antes de analizarla.',
+        },
+      });
+    }
+
     // ✅ 4. IA genérica + configurable por endpoint
     const datosIA = await askAIStructured({
       modelo: "gemini-3.1-flash-lite",
@@ -983,6 +996,20 @@ const documentPaths = archivos
       return trimmed === '' ? null : trimmed;
     };
 
+    // Formateo COP posterior al resultado IA. No modifica prompts de Gemini.
+    const montoNormalizado = normalizarImporteCOP(datosIA.valor);
+    if (datosIA.valor !== null && datosIA.valor !== undefined &&
+        datosIA.valor !== '' && montoNormalizado === null) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({
+        error: 'El monto de la factura no tiene un formato confiable',
+        ai_error: {
+          code: 'FVE_COP_IMPORTE_INVALIDO',
+          message_user: 'La IA devolvio un valor monetario ambiguo. Revisa el importe de la factura y registra el valor manualmente; no se modifico el consumo.',
+        },
+      });
+    }
+
     // ✅ 6. Mezclar IA + valores actuales
     const finalData = {
         tipo:
@@ -1000,7 +1027,7 @@ const documentPaths = archivos
             consumoActual.periodo_fin ??
             null,
 
-        valor: normalizeInt(datosIA.valor) ?? consumoActual.valor ?? null,
+        valor: montoNormalizado ?? consumoActual.valor ?? null,
 
         consumo:
             normalizeConsumoObject(datosIA.consumo) ??
@@ -1062,6 +1089,16 @@ const documentPaths = archivos
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error analizando consumo:', err);
+
+    if (String(err?.code || '').startsWith('FVE_IA_DOCUMENT_')) {
+      return res.status(422).json({
+        error: 'No se pudo leer el documento adjunto',
+        ai_error: {
+          code: err.code,
+          message_user: err.messageUser || 'El PDF no pudo procesarse. Revisa el archivo adjunto.',
+        },
+      });
+    }
 
     return res.status(500).json({
       error: err.message || 'Error interno al analizar consumo',

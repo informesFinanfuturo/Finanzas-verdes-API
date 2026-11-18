@@ -61,4 +61,12 @@ router.post(
   gestion.agendarProspecto
 );
 
+// PARCHE_PROSPECTO_CONVERSION_V1
+const conversion = require('../controllers/prospecto.conversion.controller').crearControlador();
+router.post(
+  '/:idProspecto/convertir',
+  requirePermissions(['Gestionar prospectos', 'Crear cliente', 'Crear mipyme']),
+  conversion.convertir
+);
+
 module.exports = router;

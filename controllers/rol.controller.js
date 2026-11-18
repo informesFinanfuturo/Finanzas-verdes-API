@@ -1,6 +1,6 @@
 // controllers/roles.controller.js
 const pool = require('../db');
-const jwt = require('jsonwebtoken');
+const { isAdministrator, normalizeRole } = require('../services/adminPolicy');
 
 // GET /api/roles
 async function getRols(req, res) {
@@ -60,12 +60,15 @@ async function createRole(req, res) {
 
   try {
 
-    if (!nombre_rol) {
+    if (!nombre_rol || typeof nombre_rol !== 'string' || nombre_rol.trim().length > 80) {
       return res.status(400).json({
         error: 'nombre es obligatorio',
       });
     }
 
+    if (isAdministrator(nombre_rol)) {
+      return res.status(409).json({ error: 'Los roles administrativos son reservados y ya deben existir' });
+    }
     const result = await pool.query(
       `
       INSERT INTO "rol" (
@@ -118,7 +121,7 @@ async function updateRol(req, res) {
 
     // 2️⃣ Verificar que el usuario exista
     const current = await pool.query(
-      'SELECT id_rol FROM rol WHERE id_rol = $1',
+      'SELECT id_rol, nombre_rol, estado FROM rol WHERE id_rol = $1',
       [id]
     );
 
@@ -128,6 +131,15 @@ async function updateRol(req, res) {
       });
     }
 
+    const currentRole = current.rows[0];
+    if (isAdministrator(currentRole.nombre_rol) &&
+        ((nombre_rol && normalizeRole(nombre_rol) !== normalizeRole(currentRole.nombre_rol)) ||
+         (estado && String(estado).toLowerCase() !== 'activo'))) {
+      return res.status(409).json({ error: 'No puede renombrar o desactivar roles administrativos del sistema' });
+    }
+    if (nombre_rol && isAdministrator(nombre_rol) && !isAdministrator(currentRole.nombre_rol)) {
+      return res.status(409).json({ error: 'Nombre de rol administrativo reservado' });
+    }
     // 4️⃣ Construir UPDATE dinámico
     const fields = [];
     const values = [];
@@ -189,6 +201,13 @@ async function togglePermisoRol(req, res) {
       });
     }
 
+    const role = await pool.query('SELECT nombre_rol FROM public.rol WHERE id_rol = $1', [id_rol]);
+    if (!role.rowCount) return res.status(404).json({ error: 'Rol no encontrado' });
+    if (isAdministrator(role.rows[0].nombre_rol)) {
+      return res.status(409).json({
+        error: 'Los permisos de Administrador y Super Administrador son equivalentes y no se desactivan individualmente'
+      });
+    }
     // 1️⃣ Verificar si ya existe la relación
     const exists = await pool.query(
       `

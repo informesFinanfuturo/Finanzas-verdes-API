@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "descripcion": "Lista blanca de fuentes tecnicas publicas. Editar aqui para agregar sitios o paginas; no contiene credenciales.",
+  "limites": {
+    "max_fuentes_por_busqueda": 4,
+    "max_paginas_totales": 24,
+    "max_paginas_por_fuente": 12,
+    "max_profundidad": 2,
+    "max_documentos_para_ia": 6,
+    "timeout_por_pagina_ms": 7000,
+    "timeout_total_ms": 35000,
+    "max_html_bytes": 1000000,
+    "max_sitemap_urls": 350
+  },
+  "fuentes": [
+    {
+      "id": "haceb_fabricante",
+      "nombre": "Haceb - fabricante oficial",
+      "habilitada": true,
+      "categorias": ["NEVERAS_REFRIGERACION"],
+      "marcas": ["Haceb"],
+      "dominios": ["www.haceb.com", "haceb.com"],
+      "paginas_iniciales": [
+        "https://www.haceb.com/nevera-haceb-no-frost-271-litros-manija-integrada-inox-7704353452938/p",
+        "https://www.haceb.com/nevera-haceb-no-frost-271-litros-manija-integrada-inox-inverter-9003543/p"
+      ],
+      "rutas_permitidas": ["/nevera", "/refriger", "/producto", "/electrodomestico"],
+      "rutas_bloqueadas": ["/cart", "/checkout", "/login", "/cuenta", "/account"],
+      "sitemap": true
+    },
+    {
+      "id": "homecenter_distribuidor",
+      "nombre": "Homecenter - fichas de distribuidores",
+      "habilitada": true,
+      "categorias": ["NEVERAS_REFRIGERACION"],
+      "marcas": ["Haceb"],
+      "dominios": ["www.homecenter.com.co", "homecenter.com.co"],
+      "paginas_iniciales": [
+        "https://www.homecenter.com.co/homecenter-co/product/673609/nevera-haceb-no-frost-271-litros-manija-externa-h6164nt27-negro/673609/",
+        "https://www.homecenter.com.co/homecenter-co/product/673610/nevera-haceb-no-frost-243-litros-manija-integrada-negro-esmeralda-h6164nt24/673610/"
+      ],
+      "rutas_permitidas": ["/homecenter-co/product/"],
+      "rutas_bloqueadas": ["/login", "/checkout", "/mi-cuenta"],
+      "sitemap": false
+    }
+  ]
+}

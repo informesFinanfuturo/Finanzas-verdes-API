@@ -1,6 +1,7 @@
 // routes/roles.routes.js
 const express = require('express');
 const router = express.Router();
+const requireAdministrator = require('../middleware/requireAdministrator');
 const requirePermissions = require('../middleware/requirePermissions');
 const {
   getPermissions,
@@ -12,9 +13,9 @@ const {
 router.get('/', requirePermissions(["Obtener permisos"]), getPermissions);
 
 // POST /api/permission
-router.post('/', requirePermissions(["Crear permiso"]), createPermission);
+router.post('/', requireAdministrator, createPermission);
 
 // PATCH /api/permission
-router.patch('/:id', requirePermissions(["Editar permiso"]), updatePermission);
+router.patch('/:id', requireAdministrator, updatePermission);
 
 module.exports = router;

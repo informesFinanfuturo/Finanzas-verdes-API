@@ -2,6 +2,7 @@
 const bcrypt = require('bcrypt');
 const pool = require('../db');
 const { findCiiuByCode } = require('../services/ciiuService');
+const { validarHorarioOperacion } = require('../services/fveHorariosUso');
 const { sendWelcomeEmail } = require('../utils/authMail');
 const { isDocumentoONit, isNitJuridico } = require('../utils/validators');
 const { construirDiagnosticosCompletos } = require('./diagnostico.controller');
@@ -378,6 +379,8 @@ async function getClienteFull(req, res) {
         m.municipio,
         m.barrio,
         m.estrato,
+        m.tipo_factura,
+        m.horario_operacion,
         m.descripcion_empresa,
         m.cantidad_empleados,
         m.ingresos,
@@ -577,6 +580,8 @@ async function getClienteFull(req, res) {
             municipio: row.municipio,
             barrio: row.barrio,
             estrato: row.estrato,
+            tipo_factura: row.tipo_factura,
+            horario_operacion: row.horario_operacion,
             descripcion_empresa: row.descripcion_empresa,
             cantidad_empleados: row.cantidad_empleados,
             ingresos: row.ingresos,
@@ -619,10 +624,18 @@ async function createMipyme(req, res) {
     ingresos,
     egresos,
     codigo_ciiu,
+    horario_operacion,
 
     created_by,
   } = req.body;
 
+  let horarioValidado;
+  try {
+    horarioValidado = horario_operacion === undefined
+      ? undefined : validarHorarioOperacion(horario_operacion);
+  } catch (e) {
+    return res.status(400).json({error: e.message});
+  }
   const client = await pool.connect();
 
   try {
@@ -692,6 +705,10 @@ async function createMipyme(req, res) {
     );
 
     const idMipyme = result.rows[0].id_mipyme;
+    if (horarioValidado !== undefined) {
+      await client.query('UPDATE public.mipyme SET horario_operacion = $1::jsonb WHERE id_mipyme = $2',
+        [horarioValidado === null ? null : JSON.stringify(horarioValidado), idMipyme]);
+    }
 
     // ✅ RELACIÓN CORRECTA (SIN id_cliente)
     await client.query(
@@ -750,12 +767,29 @@ async function updateMipyme(req, res) {
     codigo_ciiu,
 
     estrato,
+    tipo_factura,
+    horario_operacion,
     tipo_persona,
     tipo_empresa,
 
     estado,
     updated_by,
   } = req.body;
+
+  if (tipo_factura !== undefined && tipo_factura !== null &&
+      !['Comercial', 'Residencial'].includes(tipo_factura)) {
+    return res.status(400).json({error: 'Tipo de factura invalido'});
+  }
+  if (tipo_factura === 'Comercial' && estrato != null) {
+    return res.status(400).json({error: 'Factura comercial no tiene estrato'});
+  }
+  let horarioValidado;
+  try {
+    horarioValidado = horario_operacion === undefined
+      ? undefined : validarHorarioOperacion(horario_operacion);
+  } catch (e) {
+    return res.status(400).json({error: e.message});
+  }
 
   try {
 
@@ -1012,13 +1046,19 @@ async function updateMipyme(req, res) {
         clean(tipo_empresa)
       );
 
-    if (estrato !== undefined)
+    if (estrato !== undefined || tipo_factura === 'Comercial')
       add(
         'estrato',
-        estrato != null
-          ? Number(estrato)
-          : null
+        tipo_factura === 'Comercial' ? null :
+          (estrato != null ? Number(estrato) : null)
       );
+
+    // FVE_FACTURA_COMERCIAL_20261114
+    if (tipo_factura !== undefined)
+      add('tipo_factura', tipo_factura);
+
+    if (horarioValidado !== undefined)
+      add('horario_operacion', horarioValidado === null ? null : JSON.stringify(horarioValidado));
 
     if (estado !== undefined)
       add(
@@ -1107,6 +1147,9 @@ async function getPreviewInfoClient(req, res) {
         m.egresos,
         m.codigo_ciiu,
         m.tipo_empresa,
+        m.estrato,
+        m.tipo_factura,
+        m.horario_operacion,
         m.estado AS estado_mipyme,
 
         -- ✅ ACTIVOS CON TODA INFO + IMÁGENES
@@ -1283,6 +1326,9 @@ async function getPreviewInfoClient(req, res) {
             egresos: row.egresos,
             codigo_ciiu: row.codigo_ciiu,
             tipo_empresa: row.tipo_empresa,
+            estrato: row.estrato,
+            tipo_factura: row.tipo_factura,
+            horario_operacion: row.horario_operacion,
             estado: row.estado_mipyme,
           }
         : null,
@@ -1317,12 +1363,19 @@ async function getMipymeByUsuario(req, res) {
         m.nit,
         m.sector_economico,
         m.direccion,
+        m.departamento,
         m.municipio,
+        m.barrio,
+        m.tipo_persona,
+        m.tipo_empresa,
         m.descripcion_empresa,
         m.cantidad_empleados,
         m.ingresos,
         m.egresos,
         m.codigo_ciiu,
+        m.estrato,
+        m.tipo_factura,
+        m.horario_operacion,
         m.estado,
         m.created_at,
         m.updated_at,
@@ -1541,11 +1594,27 @@ async function createClientWithMipyme(req, res) {
     egresos,
     codigo_ciiu,
     estrato,
+    tipo_factura,
+    horario_operacion,
     tipo_empresa,
 
     tipo_relacion,
     created_by,
   } = req.body;
+
+  if (tipo_factura != null && !['Comercial', 'Residencial'].includes(tipo_factura)) {
+    return res.status(400).json({error: 'Tipo de factura invalido'});
+  }
+  if (tipo_factura === 'Comercial' && estrato != null) {
+    return res.status(400).json({error: 'Factura comercial no tiene estrato'});
+  }
+  let horarioValidado;
+  try {
+    horarioValidado = horario_operacion === undefined
+      ? undefined : validarHorarioOperacion(horario_operacion);
+  } catch (e) {
+    return res.status(400).json({error: e.message});
+  }
 
   const client = await pool.connect();
 
@@ -1793,6 +1862,20 @@ async function createClientWithMipyme(req, res) {
     );
 
     const mipyme = mipymeResult.rows[0];
+    // FVE_FACTURA_COMERCIAL_20261114
+    if (tipo_factura != null) {
+      const rFactura = await client.query(
+        'UPDATE public.mipyme SET tipo_factura = $1 WHERE id_mipyme = $2 RETURNING tipo_factura',
+        [tipo_factura, mipyme.id_mipyme]
+      );
+      mipyme.tipo_factura = rFactura.rows[0].tipo_factura;
+    }
+
+    if (horarioValidado !== undefined) {
+      await client.query('UPDATE public.mipyme SET horario_operacion = $1::jsonb WHERE id_mipyme = $2',
+        [horarioValidado === null ? null : JSON.stringify(horarioValidado), mipyme.id_mipyme]);
+      mipyme.horario_operacion = horarioValidado;
+    }
 
     /// ✅ RELACIÓN
     await client.query(
@@ -1931,6 +2014,8 @@ async function searchClientByNitOrDocumento(req, res) {
         m.egresos,
         m.codigo_ciiu,
         m.estrato,
+        m.tipo_factura,
+        m.horario_operacion,
         m.estado AS estado_mipyme
 
       FROM usuario u

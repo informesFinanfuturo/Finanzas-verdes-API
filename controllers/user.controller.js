@@ -2,6 +2,7 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../db');
 const bcrypt = require('bcrypt');
+const { lockAdministratorChanges, assertKeepsLastAdministrator } = require('../services/adminPolicy');
 
 // GET /api/user
 
@@ -437,6 +438,7 @@ async function getUsersByRol(req, res) {
 // POST /api/user
 
 async function createUser(req, res) {
+  const created_by = req.user?.id_usuario;
   const {
     documento,
     nombre_usuario,
@@ -444,7 +446,7 @@ async function createUser(req, res) {
     telefono,
     password,
     id_rol,
-    created_by,
+    // created_by del frontend se ignora por seguridad.
 
     // ✅ DATOS ASESOR
     nombre_cargo,
@@ -465,15 +467,26 @@ async function createUser(req, res) {
 
     // 1️⃣ Validaciones
     if (!documento || !nombre_usuario || !email || !password || !id_rol) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
         error: 'documento, nombre_usuario, email, password e id_rol son obligatorios',
       });
     }
 
     if (!created_by) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
         error: 'created_by es obligatorio',
       });
+    }
+
+    const newRole = await client.query(
+      "SELECT nombre_rol FROM public.rol WHERE id_rol = $1 AND lower(estado) = 'activo'",
+      [id_rol]
+    );
+    if (!newRole.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Rol inexistente o inactivo' });
     }
 
     // 2️⃣ Validar email duplicado
@@ -483,6 +496,7 @@ async function createUser(req, res) {
     );
 
     if (existing.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(409).json({
         error: 'Ya existe un usuario con ese email',
       });
@@ -623,6 +637,7 @@ async function createUser(req, res) {
 
 // PUT /api/user/:id
 async function updateUser(req, res) {
+  const updated_by = req.user?.id_usuario;
   const idUsuario = Number(req.params.id);
 
   const {
@@ -632,7 +647,7 @@ async function updateUser(req, res) {
     telefono,
     id_rol,
     estado,
-    updated_by,
+    // updated_by del cliente se ignora.
 
     // ✅ ASESOR
     nombre_cargo,
@@ -649,14 +664,17 @@ async function updateUser(req, res) {
 
   try {
     await client.query('BEGIN');
+    await lockAdministratorChanges(client);
 
     if (Number.isNaN(idUsuario)) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
         error: 'El id debe ser numérico',
       });
     }
 
     if (!updated_by) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
         error: 'updated_by es obligatorio',
       });
@@ -664,12 +682,37 @@ async function updateUser(req, res) {
 
     // ✅ Verificar usuario
     const current = await client.query(
-      'SELECT id_usuario, email FROM usuario WHERE id_usuario = $1',
+      `SELECT u.id_usuario, u.email, u.id_rol, u.estado, u.estado_acceso,
+              r.nombre_rol, r.estado AS estado_rol
+       FROM public.usuario u JOIN public.rol r ON r.id_rol = u.id_rol
+       WHERE u.id_usuario = $1 FOR UPDATE OF u`,
       [idUsuario]
     );
 
     if (current.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    const actual = current.rows[0];
+    const requestedRoleId = id_rol == null ? actual.id_rol : Number(id_rol);
+    if (!Number.isSafeInteger(requestedRoleId) || requestedRoleId <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Rol invalido' });
+    }
+    const nextRole = await client.query(
+      "SELECT id_rol, nombre_rol FROM public.rol WHERE id_rol = $1 AND lower(estado) = 'activo'",
+      [requestedRoleId]
+    );
+    if (!nextRole.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Rol inexistente o inactivo' });
+    }
+    try {
+      await assertKeepsLastAdministrator(client, actual, requestedRoleId, estado);
+    } catch (securityError) {
+      await client.query('ROLLBACK');
+      return res.status(securityError.httpStatus || 400).json({ error: securityError.message });
     }
 
     // ✅ Email duplicado
@@ -680,7 +723,8 @@ async function updateUser(req, res) {
       );
 
       if (existing.rows.length > 0) {
-        return res.status(409).json({ error: 'Email ya existe' });
+        await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Email ya existe' });
       }
     }
 
@@ -699,7 +743,7 @@ async function updateUser(req, res) {
     if (nombre_usuario) add('nombre_usuario', nombre_usuario.trim());
     if (email) add('email', email.trim());
     if (telefono !== undefined) add('telefono', telefono);
-    if (id_rol) add('id_rol', id_rol);
+    if (id_rol != null) add('id_rol', requestedRoleId);
     if (estado) add('estado', estado);
 
     fields.push('updated_at = NOW()');
@@ -717,7 +761,7 @@ async function updateUser(req, res) {
     // ✅ OBTENER ROL
     const rolResult = await client.query(
       'SELECT nombre_rol FROM rol WHERE id_rol = $1',
-      [id_rol]
+      [requestedRoleId]
     );
 
     const rol = rolResult.rows[0]?.nombre_rol;
@@ -840,6 +884,17 @@ async function updateUser(req, res) {
       }
     }
 
+
+    if (actual.id_rol !== requestedRoleId || (estado && estado !== actual.estado)) {
+      await client.query(`
+        INSERT INTO public.audit_log
+          (id_usuario_actor, accion, entidad, id_entidad, datos_anteriores, datos_nuevos, ip, user_agent)
+        VALUES ($1, 'SEG01_USUARIO_ACCESO_CAMBIADO', 'usuario', $2, $3::jsonb, $4::jsonb, $5, $6)
+      `, [updated_by, idUsuario,
+          JSON.stringify({ id_rol: actual.id_rol, estado: actual.estado }),
+          JSON.stringify({ id_rol: requestedRoleId, estado: estado || actual.estado }),
+          req.ip || null, req.get?.('user-agent') || null]);
+    }
 
     await client.query('COMMIT');
 

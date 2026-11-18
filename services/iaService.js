@@ -2,7 +2,6 @@ const { GoogleGenAI } = require('@google/genai');
 const fs = require('fs');
 const path = require('path');
 const { text } = require('stream/consumers');
-const { fromPath } = require("pdf2pic");
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -14,6 +13,56 @@ const backupModel = 'gemini-3.1-flash-lite';
 const PRIMARY_TIMEOUT_MS = 45_000;
 const BACKUP_TIMEOUT_MS = 90_000;
 const FORCE_AI_FALLBACK = process.env.FORCE_AI_FALLBACK == 'true';
+
+class DocumentoIAError extends Error {
+  constructor(code, messageUser) {
+    super(messageUser);
+    this.name = 'DocumentoIAError';
+    this.code = code;
+    this.messageUser = messageUser;
+  }
+}
+
+function documentoPdfComoParte(pdfPath) {
+  const nombre = path.basename(pdfPath);
+  if (path.extname(pdfPath).toLowerCase() !== '.pdf') {
+    throw new DocumentoIAError('FVE_IA_DOCUMENT_FORMAT',
+      'El formato del adjunto ' + nombre + ' no es compatible con el analisis documental. Adjunta un PDF o una imagen JPG, PNG o WEBP.');
+  }
+  let info;
+  try {
+    info = fs.statSync(pdfPath);
+  } catch (_) {
+    throw new DocumentoIAError('FVE_IA_DOCUMENT_MISSING',
+      'La factura ' + nombre + ' figura como adjunta, pero su archivo no esta disponible en este servidor.');
+  }
+  if (!info.isFile() || info.size === 0) {
+    throw new DocumentoIAError('FVE_IA_DOCUMENT_EMPTY',
+      'El archivo PDF ' + nombre + ' esta vacio o no es un archivo valido.');
+  }
+  const maxBytes = 45 * 1024 * 1024;
+  if (info.size > maxBytes) {
+    throw new DocumentoIAError('FVE_IA_DOCUMENT_TOO_LARGE',
+      'El archivo ' + nombre + ' supera el limite de 45 MB para el analisis directo.');
+  }
+  let bytes;
+  try {
+    bytes = fs.readFileSync(pdfPath);
+  } catch (_) {
+    throw new DocumentoIAError('FVE_IA_DOCUMENT_UNREADABLE',
+      'No se pudo leer el archivo PDF ' + nombre + ' en el servidor.');
+  }
+  // PDF puede contener bytes de preambulo; el encabezado debe estar dentro del primer KB.
+  if (!bytes.subarray(0, 1024).toString('latin1').includes('%PDF-')) {
+    throw new DocumentoIAError('FVE_IA_DOCUMENT_INVALID',
+      'El archivo ' + nombre + ' no tiene un encabezado PDF valido.');
+  }
+  return {
+    type: 'document',
+    mime_type: 'application/pdf',
+    data: bytes.toString('base64'),
+  };
+}
 
 function detectMimeType(imagePath) {
   const ext = path.extname(imagePath).toLowerCase();
@@ -377,6 +426,7 @@ async function askAI(
 async function askAIWithImages({
   prompt,
   imagePaths = [],
+  documentPaths = [],
   modelo = model,
 }) {
 
@@ -410,6 +460,10 @@ async function askAIWithImages({
         'image',
     });
 
+  }
+
+  for (const pdfPath of documentPaths) {
+    parts.push(documentoPdfComoParte(pdfPath));
   }
 
   return ejecutarConFallback({
@@ -658,6 +712,8 @@ async function askAIWithUrl({ prompt, imagePaths = [], url = ["https://lapipa.co
   }
 }
 
+const { leerJsonIA } = require('./fveJsonToleranteIA'); // FVE_JSON_ACTIVO_LECTURA_V1
+
 async function askAIStructured({
   role,
   taskDescription,
@@ -689,124 +745,33 @@ Devuelve exactamente un JSON con esta estructura:
 ${JSON.stringify(outputSchemaExample, null, 2)}
 `;
 
-  let finalImagePaths = [
-    ...imagePaths
-  ];
+  // Enviar PDF directamente a Gemini. No usar GraphicsMagick ni Ghostscript.
+  // Si falta o es invalido un adjunto, se informa el error; jamas se ignora.
+  const tieneAdjuntos = imagePaths.length > 0 || documentPaths.length > 0;
+  const rawResponse = tieneAdjuntos
+    ? await askAIWithImages({ prompt, imagePaths, documentPaths, modelo })
+    : await askAI(prompt, modelo);
 
-  console.log("IMAGE PATHS:");
-  console.log(imagePaths);
-
-  console.log("DOCUMENT PATHS:");
-  console.log(documentPaths);
-
-  for (
-    const pdfPath of documentPaths
-  ){
-
-    try {
-
-      const pdfImages =
-        await pdfToImages(
-          pdfPath
-        );
-
-      finalImagePaths.push(
-        ...pdfImages
-      );
-
-    } catch(error){
-
-      console.error(
-        'Error convirtiendo PDF',
-        pdfPath,
-        error
-      );
-
-    }
-
-  }
-
-  const rawResponse =
-    finalImagePaths.length > 0
-      ? await askAIWithImages({
-        prompt,
-        imagePaths: finalImagePaths,
-        modelo
-      })
-      : await askAI(prompt, modelo);
-  
-  //const rawResponse = await askAIWithUrl({ prompt, imagePaths });
-
-  const cleanResponse = cleanAIResponse(rawResponse);
-
+  // FVE_JSON_ACTIVO_LECTURA_V1: recuperar errores de formato sin inventar datos.
   try {
-    return JSON.parse(cleanResponse);
+    const lectura = leerJsonIA(rawResponse);
+    console.log('[FVE-IA-JSON]', JSON.stringify({
+      etapa: 'JSON_INTERPRETADO', via: lectura.via,
+      caracteres: typeof rawResponse === 'string' ? rawResponse.length : 0,
+      claves: Object.keys(lectura.objeto).slice(0, 20),
+    }));
+    return lectura.objeto;
   } catch (error) {
-    throw new Error(`La IA no devolvió JSON válido. Respuesta: ${rawResponse}`);
+    console.warn('[FVE-IA-JSON]', JSON.stringify({
+      etapa: 'JSON_NO_RECUPERABLE', codigo: error.message,
+      detalle: String(error.detalleTecnico || '').slice(0, 160),
+      caracteres: typeof rawResponse === 'string' ? rawResponse.length : 0,
+      accion: 'NO_GUARDAR_ANALISIS',
+    }));
+    const problema = new Error('La IA devolvió una respuesta con formato incorrecto. No se guardaron los cambios de este análisis. Vuelve a intentar.');
+    problema.code = 'AI_JSON_INVALIDO';
+    throw problema;
   }
-}
-
-async function pdfToImages(
-  pdfPath
-){
-
-  const outputDir =
-    path.join(
-      __dirname,
-      '../temp'
-    );
-
-  if (
-    !fs.existsSync(outputDir)
-  ){
-    fs.mkdirSync(
-      outputDir,
-      { recursive:true }
-    );
-  }
-
-  const convert = fromPath(
-    pdfPath,
-    {
-      density: 200,
-
-      saveFilename:
-        path.basename(
-          pdfPath,
-          '.pdf'
-        ),
-
-      savePath:
-        outputDir,
-
-      format: "png",
-
-      width: 1800,
-
-      height: 2400,
-    },
-    {
-      graphicsMagick: true,
-    }
-  );
-
-  const pages =
-  await convert.bulk(
-    -1
-  );
-
-  console.log(
-    "===== PDF CONVERTIDO ====="
-  );
-
-  console.dir(
-    pages,
-    { depth: null }
-  );
-
-  return pages.map(
-    p => p.path
-  );
 
 }
 

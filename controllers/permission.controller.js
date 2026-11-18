@@ -29,50 +29,35 @@ async function getPermissions(req, res) {
 }
 
 async function createPermission(req, res) {
-  const {
-    nombre,
-  } = req.body;
-
-  try {
-
-    if (!nombre) {
-      return res.status(400).json({
-        error: 'nombre es obligatorio',
-      });
-    }
-
-    const result = await pool.query(
-      `
-      INSERT INTO "permiso" (
-        nombre,
-        estado,
-        created_at,
-        updated_at
-      )
-      VALUES ($1, 'activo', NOW(), NULL)
-      RETURNING
-       nombre,
-        estado,
-        created_at,
-        updated_at
-      `,
-      [
-        nombre
-      ]
-    );
-
-    // 5️⃣ Respuesta
-    return res.status(201).json({
-      message: 'Permiso creado correctamente',
-      user: result.rows[0],
-    });
-
-  } catch (err) {
-    console.error('Error al crear permiso:', err);
-    return res.status(500).json({
-      error: 'Error interno al crear permiso',
-    });
+  const nombre = req.body?.nombre;
+  if (typeof nombre !== 'string' || !nombre.trim() || nombre.trim().length > 100) {
+    return res.status(400).json({ error: 'Nombre de permiso invalido' });
   }
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    const result = await db.query(`
+      INSERT INTO public.permiso (nombre, estado, created_at, updated_at)
+      VALUES ($1, 'activo', NOW(), NULL)
+      RETURNING id_permiso, nombre, estado, created_at, updated_at
+    `, [nombre.trim()]);
+    await db.query(`
+      INSERT INTO public.permiso_rol (id_rol, id_permiso)
+      SELECT r.id_rol, $1 FROM public.rol r
+      WHERE lower(trim(r.nombre_rol)) IN ('administrador', 'super administrador')
+        AND lower(r.estado) = 'activo'
+        AND NOT EXISTS (
+          SELECT 1 FROM public.permiso_rol pr
+          WHERE pr.id_rol = r.id_rol AND pr.id_permiso = $1
+        )
+    `, [result.rows[0].id_permiso]);
+    await db.query('COMMIT');
+    return res.status(201).json({ message: 'Permiso creado correctamente', user: result.rows[0] });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error('Error creando permiso', err);
+    return res.status(500).json({ error: 'Error interno al crear permiso' });
+  } finally { db.release(); }
 }
 
 async function updatePermission(req, res) {
