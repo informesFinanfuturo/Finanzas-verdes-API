@@ -4,10 +4,15 @@ const router = express.Router();
 const { createItem, getItemsMyCatalog, getItemById, updateItem, uploadImagenItem, deleteImagenItem, testCatalogCrawler, obtenerProductosLaPipa, syncComercialCaldas, syncTodosLosCatalogos } = require('../controllers/catalogo.controller');
 const requirePermissions = require('../middleware/requirePermissions');
 const upload = require('../upload');
+const requireAdministrator = require('../middleware/requireAdministrator');
+const { getCatalogoAdmin, getSyncHistory, getSyncById } = require('../controllers/adminCompat.controller');
 
 // GET /api/roles
 //router.get('/', getRols);
 router.get('/', requirePermissions(["Obtener catálogo"]), getItemsMyCatalog);
+router.get('/admin', requireAdministrator, getCatalogoAdmin);
+router.get('/sync/history', requireAdministrator, getSyncHistory);
+router.get('/sync/:id', requireAdministrator, getSyncById);
 router.get('/:id', requirePermissions(["Obtener item catálogo"]), getItemById);
 
 // POST /api/roles
@@ -23,3 +28,4 @@ router.delete('/image/:id_archivo', requirePermissions(["Eliminar imagen catálo
 
 
 module.exports = router;
+

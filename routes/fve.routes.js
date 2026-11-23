@@ -52,4 +52,14 @@ const origenFve = crearOrigenFve({db:pool});
 router.get('/procesos/:idProceso/diagnostico-origen',
   requirePermissions(['Obtener diagnósticos']), origenFve.obtenerDiagnosticoOrigen);
 
+
+// FVE_PPTX_BACKEND_V1: exportación de solo lectura con trabajador aislado.
+const exportadorPowerPoint = require('../controllers/fve.presentacion.controller');
+router.post('/mipymes/:idMipyme/presentacion',
+  requirePermissions(['Obtener diagnósticos']), exportadorPowerPoint.iniciar);
+router.get('/presentaciones/:idTrabajo',
+  requirePermissions(['Obtener diagnósticos']), exportadorPowerPoint.estado);
+router.get('/presentaciones/:idTrabajo/archivo',
+  requirePermissions(['Obtener diagnósticos']), exportadorPowerPoint.descargar);
+
 module.exports = router;

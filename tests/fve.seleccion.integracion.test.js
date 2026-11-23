@@ -19,10 +19,14 @@ test('un proceso historico no recibe sugerencias IA como si fueran confirmadas',
   const snapshot={diagnostico:{metricas:{activos_seleccionados:[4],activos:[{id_activo:4,producto_recomendado:{id_item:15}}]}}};
   assert.deepEqual(v.contextoSeleccion(snapshot,{}),[{id_activo:4,id_item:null,origen:'pendiente',cantidad:1}]);
 });
-test('recupera producto confirmado en foto inicial y no lo pisa con cambios posteriores',()=>{
+test('la seleccion explicitamente reparada tiene prioridad sobre el snapshot antiguo',()=>{
   const foto={diagnostico:{metricas:{activos_seleccionados:[4],alternativas_seleccionadas:[{id_activo:4,id_item:15}]}}};
   const vivo={alternativas_seleccionadas:[{id_activo:4,id_item:18}]};
-  assert.deepEqual(v.contextoSeleccion(foto,vivo),[{id_activo:4,id_item:15,origen:'diagnostico_inicial',cantidad:1}]);
+  assert.deepEqual(v.contextoSeleccion(foto,vivo),[{id_activo:4,id_item:18,origen:'recuperado_diagnostico_actual',cantidad:1}]);
+});
+test('conserva el producto del snapshot cuando no existe una seleccion posterior',()=>{
+  const foto={diagnostico:{metricas:{activos_seleccionados:[4],alternativas_seleccionadas:[{id_activo:4,id_item:15}]}}};
+  assert.deepEqual(v.contextoSeleccion(foto,{}),[{id_activo:4,id_item:15,origen:'diagnostico_inicial',cantidad:1}]);
 });
 test('si la foto no tiene producto se admite recuperacion explicita posterior y se identifica origen',()=>{
   const foto={diagnostico:{metricas:{activos_seleccionados:[4]}}};

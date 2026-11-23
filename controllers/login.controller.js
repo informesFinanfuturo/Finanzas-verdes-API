@@ -24,6 +24,8 @@ async function loginUser(req, res) {
         u.email,  
         u.telefono,
         u.password_hash,
+        u.must_change_password,
+        u.token_version,
         u.estado,
         r.id_rol,
         r.nombre_rol
@@ -31,6 +33,8 @@ async function loginUser(req, res) {
       JOIN rol r ON r.id_rol = u.id_rol
       WHERE u.email = $1
         AND u.estado = 'activo'
+        AND u.estado_acceso = 'activo'
+        AND r.estado = 'activo'
       `,
       [email]
     );
@@ -65,6 +69,7 @@ async function loginUser(req, res) {
         id_usuario: user.id_usuario,
         id_rol: user.id_rol,
         nombre_rol: user.nombre_rol,
+        token_version: Number(user.token_version ?? 0),
       },
       process.env.JWT_SECRET,
       { expiresIn: '3h' }
@@ -74,6 +79,7 @@ async function loginUser(req, res) {
     return res.status(200).json({
       message: 'Login exitoso',
       token, // ✅ TOKEN
+      must_change_password: Boolean(user.must_change_password),
       user: {
         id_usuario: user.id_usuario,
         documento: user.documento,
@@ -98,3 +104,4 @@ async function loginUser(req, res) {
 module.exports = {
   loginUser,
 };
+

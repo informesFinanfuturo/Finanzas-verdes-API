@@ -3,11 +3,16 @@ const express = require('express');
 const router = express.Router();
 const requirePermissions = require('../middleware/requirePermissions');
 const upload = require('../upload');
+const requireAdministrator = require('../middleware/requireAdministrator');
+const { getProveedoresAdmin } = require('../controllers/adminCompat.controller');
 const { createTipoProveedor, getTipoProveedores } = require('../controllers/proveedor.controller');
 
 // POST /api/activo
 router.post('/tipo', requirePermissions(["Crear tipo proveedor"]), createTipoProveedor);
 //router.post('/upload', upload.single('image'), uploadImagenActivo);
+
+// GET /api/proveedor/admin
+router.get('/admin', requireAdministrator, getProveedoresAdmin);
 
 // GET /api/activo
 router.get('/tipo', requirePermissions(["Obtener tipos proveedores"]), getTipoProveedores);
@@ -19,3 +24,4 @@ router.get('/tipo', requirePermissions(["Obtener tipos proveedores"]), getTipoPr
 //router.delete('/image/:id_archivo', requirePermissions(["Eliminar imagen activo"]), deleteImagenActivo);
 
 module.exports = router;
+
