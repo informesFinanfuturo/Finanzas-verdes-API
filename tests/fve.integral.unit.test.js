@@ -34,14 +34,24 @@ test('no presenta productos deshabilitados',()=>{
  const a=n.crearDetalle([linea()]);
  assert.ok(n.cambioPrecio(a,[{id_item:2,precio_base:1240000,disponible:false,estado:'activo',proveedor_estado:'activo'}]));
 });
-test('PDF binario genera pagina y huella reproducible',()=>{
- const a={id_proceso:5,numero_version:2,detalle:n.crearDetalle([linea()],{id_diagnostico:24,nombre_mipyme:'Restaurante Bogotá'})};
- const p1=pdf.generarPdfPropuesta(a),p2=pdf.generarPdfPropuesta(a);
- assert.equal(p1.buffer.toString('latin1',0,8),'%PDF-1.4');assert.equal(p1.sha256,p2.sha256);
- assert.match(p1.sha256,/^[a-f0-9]{64}$/);assert.ok(p1.buffer.length>1300);
+test('HTML institucional reproducible, sin estados tecnicos crudos',()=>{
+ const a={id_proceso:5,numero_version:2,detalle:n.crearDetalle([linea()],{id_diagnostico:24,nombre_mipyme:'Empresa de prueba'})};
+ const h1=pdf.construirHtmlPropuesta(a),h2=pdf.construirHtmlPropuesta(a);
+ assert.equal(h1,h2);
+ assert.match(h1,/Propuesta de inversi\u00f3n/);
+ assert.match(h1,/data:image\/png;base64/);
+ assert.doesNotMatch(h1,/pendiente_dato/);
 });
-test('PDF largas propuestas generan multiples paginas',()=>{
+test('PDF binario y huella SHA-256', {skip:!process.env.FVE_TEST_PDF}, async()=>{
+ const a={id_proceso:5,numero_version:2,detalle:n.crearDetalle([linea()],{id_diagnostico:24,nombre_mipyme:'Empresa de prueba'})};
+ const r=await pdf.generarPdfPropuesta(a);
+ assert.equal(r.buffer.subarray(0,4).toString(),'%PDF');
+ assert.match(r.sha256,/^[a-f0-9]{64}$/);
+ assert.ok(r.buffer.length>1300);
+});
+test('PDF con muchos productos usa varias paginas', {skip:!process.env.FVE_TEST_PDF}, async()=>{
  const l=Array.from({length:60},(_,i)=>({...linea(),id_activo:i+1}));
  const a={id_proceso:5,numero_version:2,detalle:n.crearDetalle(l)};
- const r=pdf.generarPdfPropuesta(a);assert.ok(r.paginas>=2);
+ const r=await pdf.generarPdfPropuesta(a);
+ assert.ok(r.paginas>=2);
 });

@@ -8,6 +8,8 @@ const modificar=requirePermissions(['Generar diagnóstico']);
 router.get('/procesos/:idProceso/negociacion',leer,c.consultar);
 router.get('/procesos/:idProceso/negociacion/diagnostico',leer,c.diagnosticoOrigen);
 router.post('/procesos/:idProceso/negociacion/propuesta',modificar,c.prepararPropuesta);
+router.post('/procesos/:idProceso/negociacion/volver-propuesta',modificar,c.volverAPropuesta);
+router.get('/procesos/:idProceso/negociacion/propuestas/:idPropuesta/vista-previa',leer,c.vistaPreviaPdf);
 router.post('/procesos/:idProceso/negociacion/presentar',modificar,c.presentar);
 router.get('/procesos/:idProceso/negociacion/propuestas/:idPropuesta/pdf',leer,c.descargarPdf);
 router.post('/procesos/:idProceso/negociacion/decision',modificar,c.decision);

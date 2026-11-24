@@ -150,6 +150,43 @@ function crearControlador({db=pool,acceso=accesoMipyme}={}){
     await evento(c,p,u,'BORRADOR_PREPARADO',{id_propuesta:r.rows[0].id_propuesta,version:r.rows[0].numero_version,total:detalle.total_inversion});
     return {ok:true,paso_actual:4,propuesta:r.rows[0]};
   });}
+  async function volverAPropuesta(req,res){return withTx(req,res,async(c,p,u)=>{
+    paso(p,4);
+    const borrador=await ult(c,p.id_proceso);
+    if(!borrador || borrador.estado!=='borrador')fallo(409,'La propuesta ya no es editable');
+    await c.query('UPDATE public.fve_proceso SET paso_actual=3 WHERE id_proceso=$1',[p.id_proceso]);
+    await evento(c,p,u,'BORRADOR_DEVUELTO_A_PROPUESTA',{id_propuesta:borrador.id_propuesta});
+    return {ok:true,paso_actual:3};
+  });}
+  async function vistaPreviaPdf(req,res){
+    let conexion;
+    try{
+      const {usuario,idProceso}=validaUsuario(req);
+      const idPropuesta=n.id(req.params.idPropuesta);
+      if(!idPropuesta)fallo(400,'Propuesta invalida');
+      conexion=await db.connect();
+      await conexion.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const p=await proceso(conexion,idProceso,usuario);
+      paso(p,4);
+      const actual=await ult(conexion,idProceso);
+      if(!actual || Number(actual.id_propuesta)!==idPropuesta || actual.estado!=='borrador')
+        fallo(409,'No existe un borrador actual para previsualizar');
+      await conexion.query('COMMIT');conexion.release();conexion=null;
+      const pdf=await generarPdfPropuesta({...actual,diagnostico_titulo:p.diagnostico_titulo});
+      res.setHeader('Content-Type','application/pdf');
+      res.setHeader('Content-Disposition',`inline; filename="FVE_${idProceso}_V${actual.numero_version}_vista-previa.pdf"`);
+      res.setHeader('Cache-Control','private, no-store');
+      res.setHeader('X-Content-Type-Options','nosniff');
+      return res.send(pdf.buffer);
+    }catch(e){
+      if(conexion)try{await conexion.query('ROLLBACK');}catch(_){}
+      if(!(e instanceof ErrorHttp))console.error('Vista previa FVE:',e);
+      const status=e.status||500;
+      return res.status(status).json({error:e instanceof ErrorHttp?e.message:
+        status===503?'No fue posible preparar el PDF en el servidor. Verifica el motor de impresion.':
+        'No fue posible generar la vista previa de esta propuesta'});
+    }finally{if(conexion)conexion.release();}
+  }
   async function presentar(req,res){return withTx(req,res,async(c,p,u)=>{
     paso(p,4);const actual=await ult(c,p.id_proceso);
     if(!actual||actual.estado!=='borrador')fallo(409,'No existe borrador editable de propuesta');
@@ -160,7 +197,7 @@ function crearControlador({db=pool,acceso=accesoMipyme}={}){
       WHERE i.id_item=ANY($1::int[]) FOR SHARE OF i,p`,[ids]);
     const cambio=n.cambioPrecio(detalle,items.rows);
     if(cambio)fallo(409,cambio);
-    const pdf=generarPdfPropuesta(actual);
+    const pdf=await generarPdfPropuesta({...actual,diagnostico_titulo:p.diagnostico_titulo});
     const r=await c.query(`UPDATE public.fve_propuesta_version SET estado='presentada',
       presented_at=now(),pdf_bytes=$2,pdf_sha256=$3 WHERE id_propuesta=$1 AND estado='borrador'
       RETURNING id_propuesta,numero_version,pdf_sha256`,[actual.id_propuesta,pdf.buffer,pdf.sha256]);
@@ -287,6 +324,6 @@ function crearControlador({db=pool,acceso=accesoMipyme}={}){
     await evento(c,p,u,'NEGOCIACION_ACEPTADA',{id_propuesta:actual.id_propuesta,version:actual.numero_version});
     return {ok:true,paso_actual:8,cierre:r2.rows[0]};
   });}
-  return {consultar,diagnosticoOrigen,prepararPropuesta,presentar,descargarPdf,decision,reanudar,financiacion,viabilidad,reformular,aceptar};
+  return {consultar,diagnosticoOrigen,prepararPropuesta,volverAPropuesta,vistaPreviaPdf,presentar,descargarPdf,decision,reanudar,financiacion,viabilidad,reformular,aceptar};
 }
 module.exports={crearControlador};
